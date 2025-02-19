@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# Install neovim
+if [[ "$(uname -s)" == "Linux" ]]
+then
+  sudo apt-get install -y neovim
+else
+  brew install neovim
+fi
+
+echo "Confirming neovim was installed"
+nvim --version
+
+# Copy nvim config
+mkdir -p $HOME/.config/nvim
+cp -r nvim/* $HOME/.config/nvim/.

@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# Copy aliases
+cp .aliases ~/.
+echo "" >> ~/.zshrc
+echo "if [ -e $HOME/.aliases ]; then" >> ~/.zshrc
+echo "    source $HOME/.aliases" >> ~/.zshrc
+echo "fi" >> ~/.zshrc
