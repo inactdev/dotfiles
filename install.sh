@@ -1,7 +1,7 @@
 #!/bin/bash
 echo -e "BEGINNING INSTALL\n"
 
-NEOVIM_PATH="neovim"
+NEOVIM_PATH="install_neovim"
 FONT_PATH="font"
 GIT_PATH="git"
 ALIAS_PATH="aliases"
