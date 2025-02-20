@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "INSTALLING NEOVIM"
+echo -e "INSTALLING Neovim\n"
 
 # Install neovim
 if [[ "$(uname -s)" == "Linux" ]]
@@ -9,9 +9,38 @@ else
   brew install neovim
 fi
 
-echo "Confirming neovim was installed"
+echo "CONFIRMING neovim was installed"
 nvim --version
+echo -e "\n"
+
+install_node (){
+  if command -v node &> /dev/null; then
+    echo -e "Node.js is installed. Skipping\n"
+    return
+  fi
+    
+  echo -e "INSTALLING Node.js\n"
+
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    sudo apt install nodejs
+  else
+    brew install node
+  fi
+}
+
+# Install required tools for Neovim plugins: ripgrep, node
+if [[ "$(uname -s)" == "Linux" ]]; then
+  sudo apt-get install ripgrep
+else
+  brew install ripgrep
+fi
+
+install_node
+echo "CONFIRMING Node.js was installed"
+node -v
+echo -e "\n"
 
 # Copy nvim config
+echo - "COPYING Neovim configs\n"
 mkdir -p $HOME/.config/nvim
-cp -r nvim/* $HOME/.config/nvim/.
+cp -r "nvim/"* $HOME/.config/nvim/.

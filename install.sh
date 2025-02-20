@@ -1,6 +1,8 @@
 #!/bin/bash
+echo -e "BEGINNING INSTALL\n"
 
 NEOVIM_PATH="neovim"
+FONT_PATH="font"
 GIT_PATH="git"
 ALIAS_PATH="aliases"
 
@@ -9,7 +11,7 @@ set_homebrew_env_vars() {
   COMMAND="/opt/homebrew/bin/brew shellenv"
 
   if [ ! -z $(grep "$COMMAND" "$PROFILE_FILE") ]; then
-    echo "Homebrew env vars command found. Skipping."
+    echo -e "Homebrew env vars command found. Skipping.\n"
   else
     echo 'eval "$COMMAND"' >> $PROFILE_FILE
   fi
@@ -31,5 +33,6 @@ else
 fi
 
 "./$NEOVIM_PATH"
+"./$FONT_PATH"
 "./$GIT_PATH"
 "./$ALIAS_PATH"

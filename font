@@ -1,0 +1,11 @@
+#!/bin/bash
+echo -e "INSTALLING Font\n"
+
+# Installs GNU Freefont https://www.gnu.org/software/freefont/
+if [[ "$(uname -s)" == "Linux" ]]; then
+  sudo apt install fonts-freefont-ttf
+else
+  brew install font-freefont
+fi
+
+echo -e "If font installed successfully, change settings in terminal to use.\n"
