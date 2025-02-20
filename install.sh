@@ -26,7 +26,7 @@ else
   fi
 fi
 
-echo "Y" | "./$NEOVIM_PATH"
+"./$NEOVIM_PATH"
 "./$NEOVIM_CONFIG_PATH"
 "./$FONT_PATH"
 "./$GIT_PATH"
