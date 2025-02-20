@@ -1,10 +1,23 @@
 #!/bin/bash
 
 NEOVIM_PATH="neovim"
+GIT_PATH="git"
 ALIAS_PATH="aliases"
 
-if [[ "$(uname -s)" == "Linux" ]]
-then
+set_homebrew_env_vars() {
+  PROFILE_FILE="~/.zprofile"
+  COMMAND="/opt/homebrew/bin/brew shellenv"
+
+  if [ ! -z $(grep "$COMMAND" "$PROFILE_FILE") ]; then
+    echo "Homebrew env vars command found. Skipping."
+  else
+    echo 'eval "$COMMAND"' >> $PROFILE_FILE
+  fi
+    
+  eval "$COMMAND"
+}
+
+if [[ "$(uname -s)" == "Linux" ]]; then
   # APT for Linux
   sudo apt-get update
 else
@@ -13,14 +26,10 @@ else
 
   # For Apple Silicon
   if [[ $(uname -m) == 'arm64' ]]; then
-    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
-    eval "$(/opt/homebrew/bin/brew shellenv)"
+    set_homebrew_env_vars
   fi
 fi
 
-echo $NEOVIM_PATH
 "./$NEOVIM_PATH"
+"./$GIT_PATH"
 "./$ALIAS_PATH"
-
-# Git autocomplete
-curl https://raw.githubusercontent.com/git/git/master/contrib/completion/git-completion.bash -o ~/.git-completion.bash
