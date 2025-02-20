@@ -56,8 +56,3 @@ else
 fi
 
 install_node
-
-# Copy nvim config
-echo - "COPYING Neovim configs\n"
-mkdir -p $HOME/.config/nvim
-cp -r "nvim/"* $HOME/.config/nvim/.

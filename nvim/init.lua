@@ -1,1 +1,2 @@
-require("options")
+require("core")
+require("lazy_init")

@@ -2,6 +2,7 @@
 echo -e "BEGINNING INSTALL\n"
 
 NEOVIM_PATH="install_neovim"
+NEOVIM_CONFIG_PATH="neovim_config"
 FONT_PATH="font"
 GIT_PATH="git"
 ALIAS_PATH="aliases"
@@ -26,6 +27,7 @@ else
 fi
 
 "./$NEOVIM_PATH"
+"./$NEOVIM_CONFIG_PATH"
 "./$FONT_PATH"
 "./$GIT_PATH"
 "./$ALIAS_PATH"
