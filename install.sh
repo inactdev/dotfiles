@@ -7,16 +7,9 @@ GIT_PATH="git"
 ALIAS_PATH="aliases"
 
 set_homebrew_env_vars() {
-  PROFILE_FILE="~/.zprofile"
-  COMMAND="/opt/homebrew/bin/brew shellenv"
-
-  if [ ! -z $(grep "$COMMAND" "$PROFILE_FILE") ]; then
-    echo -e "Homebrew env vars command found. Skipping.\n"
-  else
-    echo 'eval "$COMMAND"' >> $PROFILE_FILE
-  fi
-    
-  eval "$COMMAND"
+  # TODO: Try to make it so that this will detect if the line exists already
+  echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+  eval "$(/opt/homebrew/bin/brew shellenv)"
 }
 
 if [[ "$(uname -s)" == "Linux" ]]; then
@@ -36,3 +29,7 @@ fi
 "./$FONT_PATH"
 "./$GIT_PATH"
 "./$ALIAS_PATH"
+
+# Run zsh
+zsh
+source ~/.zshrc

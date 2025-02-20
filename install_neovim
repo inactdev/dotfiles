@@ -1,21 +1,29 @@
 #!/bin/bash
-echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
 
-# Install neovim
-if [[ "$(uname -s)" == "Linux" ]]
-then
-  sudo apt-get install ninja-build gettext cmake curl build-essential
-  git clone https://github.com/neovim/neovim
-  cd neovim
-  make CMAKE_BUILD_TYPE=RelWithDebInfo
-  cd build && cpack -G DEB && sudo dpkg -i nvim-linux-x86_64.deb
-else
-  brew install neovim
-fi
+install_nvim (){
+  if command -v nvim &> /dev/null; then
+    echo -e "Neovim is installed. Skipping\n"
+    return
+  fi
+    
+  echo -e "INSTALLING Neovim\n"
 
-echo "CONFIRMING neovim was installed"
-nvim --version
-echo -e "\n"
+  # Install neovim
+  if [[ "$(uname -s)" == "Linux" ]]
+  then
+    sudo apt-get install ninja-build gettext cmake curl build-essential
+    git clone https://github.com/neovim/neovim
+    cd neovim
+    make CMAKE_BUILD_TYPE=RelWithDebInfo
+    cd build && cpack -G DEB && sudo dpkg -i nvim-linux-x86_64.deb
+  else
+    brew install neovim
+  fi
+
+  echo "CONFIRMING neovim was installed"
+  nvim --version
+  echo -e "\n"
+}
 
 install_node (){
   if command -v node &> /dev/null; then
@@ -30,7 +38,15 @@ install_node (){
   else
     brew install node
   fi
+  
+  echo "CONFIRMING Node.js was installed"
+  node -v
+  echo -e "\n"
 }
+
+echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
+
+install_nvim
 
 # Install required tools for Neovim plugins: ripgrep, node
 if [[ "$(uname -s)" == "Linux" ]]; then
@@ -40,9 +56,6 @@ else
 fi
 
 install_node
-echo "CONFIRMING Node.js was installed"
-node -v
-echo -e "\n"
 
 # Copy nvim config
 echo - "COPYING Neovim configs\n"
