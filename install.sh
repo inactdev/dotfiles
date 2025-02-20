@@ -1,7 +1,7 @@
 #!/bin/bash
 
-$NEOVIM_PATH = "neovim"
-$ALIAS_PATH = "aliases"
+NEOVIM_PATH="neovim"
+ALIAS_PATH="aliases"
 
 if [[ "$(uname -s)" == "Linux" ]]
 then
@@ -9,7 +9,7 @@ then
   sudo apt-get update
 else
   #Homebrew for Apple
-  curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
+  curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | bash
 
   # For Apple Silicon
   if [[ $(uname -m) == 'arm64' ]]; then
@@ -18,8 +18,9 @@ else
   fi
 fi
 
-execute ./$NEOVIM_PATH
-execute ./$ALIAS_PATH
+echo $NEOVIM_PATH
+"./$NEOVIM_PATH"
+"./$ALIAS_PATH"
 
 # Git autocomplete
 curl https://raw.githubusercontent.com/git/git/master/contrib/completion/git-completion.bash -o ~/.git-completion.bash

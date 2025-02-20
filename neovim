@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "INSTALLING NEOVIM"
 
 # Install neovim
 if [[ "$(uname -s)" == "Linux" ]]
