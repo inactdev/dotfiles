@@ -1,11 +1,19 @@
 #!/bin/bash
-echo -e "INSTALLING Font\n"
+echo -e "INSTALLING Font\n (Probably won't work on Linux)"
 
-# Installs GNU Freefont https://www.gnu.org/software/freefont/
+# Gets SFMono-Nerd-Font-Ligaturized https://github.com/shaunsingh/SFMono-Nerd-Font-Ligaturized
 if [[ "$(uname -s)" == "Linux" ]]; then
-  sudo apt install fonts-freefont-ttf
+  if [[ ! -d SFMono-Nerd-Font-Ligaturized ]]; then
+    git clone https://github.com/shaunsingh/SFMono-Nerd-Font-Ligaturized.git
+  fi
 else
-  brew install font-freefont
+  brew tap shaunsingh/SFMono-Nerd-Font-Ligaturized
 fi
 
-echo -e "If font installed successfully, change settings in terminal to use.\n"
+# Installs the font
+if [[ "$(uname -s)" == "Linux" ]]; then
+  sudo cp -r SFMono-Nerd-Font-Ligaturized /usr/share/fonts
+else
+  brew install --cask font-sf-mono-nerd-font-ligaturized
+  echo -e "If font installed successfully, change settings in terminal to use.\n"
+fi

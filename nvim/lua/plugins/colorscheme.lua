@@ -1,9 +1,8 @@
 return {
-    "vague2k/vague.nvim",
+    "folke/tokyonight.nvim",
     lazy = false,
-    name = "vague",
     priority = 1000,
     config = function()
-      vim.cmd.colorscheme "vague"
+      vim.cmd.colorscheme "tokyonight-moon"
     end
   }

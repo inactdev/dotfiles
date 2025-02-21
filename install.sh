@@ -1,6 +1,8 @@
 #!/bin/bash
 echo -e "BEGINNING INSTALL\n"
 
+TMUX_PATH="tmux"
+TMUX_CONFIG_PATH="tmux_config"
 NEOVIM_PATH="install_neovim"
 NEOVIM_CONFIG_PATH="neovim_config"
 FONT_PATH="font"
@@ -26,6 +28,8 @@ else
   fi
 fi
 
+"./$TMUX_PATH"
+"./$TMUX_CONFIG_PATH"
 "./$NEOVIM_PATH"
 "./$NEOVIM_CONFIG_PATH"
 "./$FONT_PATH"
