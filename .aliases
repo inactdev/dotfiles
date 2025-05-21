@@ -1,0 +1,4 @@
+alias bx="bundle exec"
+alias vim="nvim"
+alias tww="tmux new -s work-windows"
+alias td="tmux new -s daemons"

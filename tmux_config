@@ -1,0 +1,8 @@
+#!/bin/bash
+echo -e "COPYING Tmux configs\n"
+
+# Copy tmux configs
+cp .tmux.conf $HOME/.tmux.conf
+
+# Make sure we download the plugins
+~/.tmux/plugins/tpm/scripts/install_plugins.sh

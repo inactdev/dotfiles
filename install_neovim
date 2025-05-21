@@ -1,0 +1,68 @@
+#!/bin/bash
+
+install_nvim (){
+  if command -v nvim &> /dev/null; then
+    echo -e "Neovim is installed. Skipping\n"
+    return
+  fi
+    
+  echo -e "INSTALLING Neovim\n"
+
+  # Install neovim
+  if [[ "$(uname -s)" == "Linux" ]]
+  then
+    # TODO: This works normally. Has issues with gifthealth Debian config
+    # sudo apt-get install -y ninja-build gettext cmake curl build-essential
+    # git clone https://github.com/neovim/neovim
+    # cd neovim
+    # make CMAKE_BUILD_TYPE=RelWithDebInfo
+    # cd build && cpack -G DEB && sudo dpkg -i nvim-linux-x86_64.deb
+
+    # Code below is for gifthealth Debian config
+    echo "Building from source..."
+    git clone https://github.com/neovim/neovim ~/neovim
+    cd ~/neovim
+    git checkout stable
+    sudo -E apt-get update -y && sudo -E apt-get install -y ninja-build gettext cmake curl build-essential
+    make CMAKE_BUILD_TYPE=RelWithDebInfo
+    sudo -E make install
+  else
+    brew install neovim
+  fi
+
+  echo "CONFIRMING neovim was installed"
+  nvim --version
+  echo -e "\n"
+}
+
+install_node (){
+  if command -v node &> /dev/null; then
+    echo -e "Node.js is installed. Skipping\n"
+    return
+  fi
+    
+  echo -e "INSTALLING Node.js\n"
+
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    sudo apt install nodejs
+  else
+    brew install node
+  fi
+  
+  echo "CONFIRMING Node.js was installed"
+  node -v
+  echo -e "\n"
+}
+
+echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
+
+install_nvim
+
+# Install required tools for Neovim plugins: ripgrep, node
+if [[ "$(uname -s)" == "Linux" ]]; then
+  sudo apt-get install ripgrep
+else
+  brew install ripgrep
+fi
+
+install_node

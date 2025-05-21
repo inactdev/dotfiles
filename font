@@ -1,0 +1,19 @@
+#!/bin/bash
+echo -e "INSTALLING Font\n (Probably won't work on Linux)"
+
+# Gets SFMono-Nerd-Font-Ligaturized https://github.com/shaunsingh/SFMono-Nerd-Font-Ligaturized
+if [[ "$(uname -s)" == "Linux" ]]; then
+  if [[ ! -d SFMono-Nerd-Font-Ligaturized ]]; then
+    git clone https://github.com/shaunsingh/SFMono-Nerd-Font-Ligaturized.git
+  fi
+else
+  brew tap shaunsingh/SFMono-Nerd-Font-Ligaturized
+fi
+
+# Installs the font
+if [[ "$(uname -s)" == "Linux" ]]; then
+  sudo cp -r SFMono-Nerd-Font-Ligaturized /usr/share/fonts
+else
+  brew install --cask font-sf-mono-nerd-font-ligaturized
+  echo -e "If font installed successfully, change settings in terminal to use.\n"
+fi

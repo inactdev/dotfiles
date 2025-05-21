@@ -1,0 +1,11 @@
+#!/bin/bash
+
+echo "COPYING ALIASES"
+
+cp .aliases $HOME/.aliases
+
+# TODO: Try to make it so that this will detect if the line exists already
+echo "" >> ~/.zshrc
+echo "if [ -e $HOME/.aliases ]; then" >> ~/.zshrc
+echo "    source $HOME/.aliases" >> ~/.zshrc
+echo "fi" >> ~/.zshrc
