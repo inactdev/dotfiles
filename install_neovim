@@ -54,6 +54,21 @@ install_node (){
   echo -e "\n"
 }
 
+install_rust (){
+  if command -V cargo &> /dev/null; then
+    echo -e "Rust is installed. Skipping\n"
+    return
+  fi
+    
+  echo -e "INSTALLING Rust\n"
+
+  curl https://sh.rustup.rs -sSf
+  
+  echo "CONFIRMING Rust was installed"
+  cargo -V
+  echo -e "\n"
+}
+
 echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
 
 install_nvim
@@ -66,3 +81,4 @@ else
 fi
 
 install_node
+install_rust
