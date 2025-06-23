@@ -55,7 +55,7 @@ install_node (){
 }
 
 install_go (){
-  if command fzf version &> /dev/null; then
+  if command go version &> /dev/null; then
     echo -e "Go is installed. Skipping\n"
     return
   fi
@@ -63,10 +63,16 @@ install_go (){
   echo -e "INSTALLING Go\n"
 
   if [[ "$(uname -s)" == "Linux" ]]; then
-  sudo rm -rf /usr/local/go && tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz
+    curl -OL https://go.dev/dl/go1.24.4.linux-amd64.tar.gz
+    sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz
+    rm go1.24.4.linux-amd64.tar.g
   else
     brew install go
   fi
+
+  echo "CONFIRMING Go was installed"
+  go version
+  echo -e "\n"
 }
 
 install_fzf (){
