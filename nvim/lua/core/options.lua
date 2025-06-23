@@ -22,7 +22,10 @@ opt.signcolumn = "yes"
 opt.backspace = "indent,eol,start" -- makes backspace work as expected
 
 -- clipboard
-opt.clipboard:append("unnamedplus") -- use system clipboard as default register
+opt.clipboard = "unnamedplus" -- use system clipboard as default register
+
+-- mouse
+opt.mouse = "a"
 
 -- split windows
 opt.splitright = true

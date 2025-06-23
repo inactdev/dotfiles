@@ -14,7 +14,7 @@ return {
 			desc = "Find Files in project directory",
 		},
 		{
-			"<leader>fg",
+			"<leader>fs",
 			function()
 				require("fzf-lua").live_grep()
 			end,
