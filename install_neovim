@@ -63,7 +63,13 @@ install_fzf (){
   echo -e "INSTALLING FZF\n"
 
   if [[ "$(uname -s)" == "Linux" ]]; then
-    sudo apt install fzf
+    # Highest version that automatically downloads from Debian is 24 so had to build from source
+    echo "Building FZF from source..."
+    git clone https://github.com/junegunn/fzf.git --branch 0.38.0 ~/fzf
+    cd ~/fzf
+    sudo -E make install
+    sudo cp -f bin/fzf /usr/local/bin/fzf
+    sudo rm -rf bin/fzf
   else
     brew install fzf
   fi
