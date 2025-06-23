@@ -54,6 +54,25 @@ install_node (){
   echo -e "\n"
 }
 
+install_fzf (){
+  if command --version fzf &> /dev/null; then
+    echo -e "FZF is installed. Skipping\n"
+    return
+  fi
+    
+  echo -e "INSTALLING FZF\n"
+
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    sudo apt install fzf
+  else
+    brew install fzf
+  fi
+  
+  echo "CONFIRMING FZF was installed"
+  fzf --version
+  echo -e "\n"
+}
+
 echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
 
 install_nvim
@@ -66,3 +85,4 @@ else
 fi
 
 install_node
+install_fzf
