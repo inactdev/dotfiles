@@ -54,27 +54,6 @@ install_node (){
   echo -e "\n"
 }
 
-install_go (){
-  if command go version &> /dev/null; then
-    echo -e "Go is installed. Skipping\n"
-    return
-  fi
-    
-  echo -e "INSTALLING Go\n"
-
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    curl -OL https://go.dev/dl/go1.24.4.linux-amd64.tar.gz
-    sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz
-    rm go1.24.4.linux-amd64.tar.g
-  else
-    brew install go
-  fi
-
-  echo "CONFIRMING Go was installed"
-  go version
-  echo -e "\n"
-}
-
 install_fzf (){
   if command --version fzf &> /dev/null; then
     echo -e "FZF is installed. Skipping\n"
@@ -82,8 +61,6 @@ install_fzf (){
   fi
     
   echo -e "INSTALLING FZF\n"
-
-  install_go
 
   if [[ "$(uname -s)" == "Linux" ]]; then
     # Highest version that automatically downloads from Debian is 24 so had to build from source
