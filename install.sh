@@ -36,6 +36,9 @@ fi
 "./$GIT_PATH"
 "./$ALIAS_PATH"
 
+# Compile and install Ghostty terminfo
+sudo tic -x ./xterm-ghostty.ti
+
 echo "SETTING ZSH AS DEFAULT SHELL"
 
 sudo chsh "$(id -un)" --shell "/usr/bin/zsh"
