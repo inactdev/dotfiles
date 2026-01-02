@@ -79,11 +79,21 @@ install_fzf (){
   echo -e "\n"
 }
 
+install_treesitter_cli (){
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    echo -e "LINUX DETECTED !!! MIGHT NEED TO MANUALLY INSTALL tree-sitter-cli\n"
+  else
+    echo -e "INSTALLING tree-sitter-cli\n"
+    brew install tree-sitter-cli
+  fi
+}
+
+
 echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
 
 install_nvim
 
-# Install required tools for Neovim plugins: ripgrep, node
+# Install required tools for Neovim plugins: ripgrep, node, etc.
 if [[ "$(uname -s)" == "Linux" ]]; then
   sudo apt-get install ripgrep
 else
@@ -92,3 +102,4 @@ fi
 
 install_node
 install_fzf
+install_treesitter_cli
