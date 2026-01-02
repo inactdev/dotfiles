@@ -4,4 +4,3 @@ echo -e "COPYING Neovim configs\n"
 # Copy nvim config
 mkdir -p $HOME/.config/nvim
 cp -r "nvim/"* $HOME/.config/nvim/.
-apt-get install bash bc coreutils gawk git jq playerctl
