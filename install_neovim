@@ -23,7 +23,7 @@ install_nvim (){
     git clone https://github.com/neovim/neovim ~/neovim
     cd ~/neovim
     git checkout stable
-    sudo -E apt-get update -y && sudo -E apt-get install -y ninja-build gettext cmake curl build-essential
+    sudo -E apt-get update -y && sudo -E apt-get install -y ninja-build gettext cmake curl build-essential clang
     make CMAKE_BUILD_TYPE=RelWithDebInfo
     sudo -E make install
   else
@@ -80,8 +80,23 @@ install_fzf (){
 }
 
 install_treesitter_cli (){
+  
   if [[ "$(uname -s)" == "Linux" ]]; then
-    echo -e "LINUX DETECTED !!! MIGHT NEED TO MANUALLY INSTALL tree-sitter-cli\n"
+    echo -e "INSTALLING tree-sitter-cli using cargo\n"
+
+    if command -v cargo &> /dev/null; then
+      echo -e "Cargo is installed. Skipping\n"
+    else
+      echo -e "INSTALLING Cargo\n"
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      source "$HOME/.cargo/env"
+
+      echo "CONFIRMING Cargo was installed"
+      cargo -V
+      echo -e "\n"
+
+      cargo install tree-sitter-cli
+    fi
   else
     echo -e "INSTALLING tree-sitter-cli\n"
     brew install tree-sitter-cli
