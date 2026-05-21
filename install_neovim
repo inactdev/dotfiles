@@ -80,13 +80,15 @@ install_fzf (){
 }
 
 install_treesitter_cli (){
-  
+  if command -v tree-sitter &> /dev/null; then
+    echo -e "tree-sitter-cli is installed. Skipping\n"
+    return
+  fi
+
   if [[ "$(uname -s)" == "Linux" ]]; then
     echo -e "INSTALLING tree-sitter-cli using cargo\n"
 
-    if command -v cargo &> /dev/null; then
-      echo -e "Cargo is installed. Skipping\n"
-    else
+    if ! command -v cargo &> /dev/null; then
       echo -e "INSTALLING Cargo\n"
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
       source "$HOME/.cargo/env"
@@ -94,15 +96,15 @@ install_treesitter_cli (){
       echo "CONFIRMING Cargo was installed"
       cargo -V
       echo -e "\n"
-
-      cargo install tree-sitter-cli
     fi
+
+    sudo apt-get install -y libclang-dev
+    cargo install tree-sitter-cli
   else
     echo -e "INSTALLING tree-sitter-cli\n"
-    brew install tree-sitter-cli
+    brew install tree-sitter
   fi
 }
-
 
 echo -e "INSTALLING Neovim (this could take a while on Linux)\n"
 
