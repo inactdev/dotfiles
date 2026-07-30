@@ -1,4 +1,9 @@
-{ config, pkgs, user, ... }:
+{
+  config,
+  pkgs,
+  user,
+  ...
+}:
 
 let
   dotfiles = "${config.home.homeDirectory}/.dotfiles";
@@ -23,15 +28,21 @@ in
     nodejs
     go
     cmake
-    gnumake       # nix's name for make
-    python3       # instead of python@3.14 — pinned via flake.lock like everything else
-    tree-sitter   # covers both tree-sitter and tree-sitter-cli
+    gnumake # nix's name for make
+    python3 # instead of python@3.14 — pinned via flake.lock like everything else
+    tree-sitter # covers both tree-sitter and tree-sitter-cli
     watchman
     # utilities
     imagemagick
     graphviz
     cloudflared
     arp-scan
+
+    # formatters
+    stylua
+    prettierd
+    ruff
+    nixfmt
   ];
 
   home.sessionVariables.EDITOR = "nvim";
@@ -53,6 +64,11 @@ in
     gitCredentialHelper.enable = true;
   };
 
+  programs.direnv = {
+    enable = true;
+    nix-direnv.enable = true;
+  };
+
   programs.starship.enable = true;
 
   programs.zsh = {
@@ -60,10 +76,10 @@ in
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     shellAliases = {
-      bx   = "bundle exec";
-      vim  = "nvim";
-      tww  = "tmux new -s work-windows";
-      tdd  = "tmux new -s daemons";
+      bx = "bundle exec";
+      vim = "nvim";
+      tww = "tmux new -s work-windows";
+      tdd = "tmux new -s daemons";
       cssh = "infocmp -x xterm-ghostty | ssh gh codespace ssh tic -x -h";
     };
     initContent = ''
@@ -81,8 +97,7 @@ in
   # Editing ~/.config/nvim IS editing the repo. Commit to port changes.
   home.file.".config/nvim".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/nvim";
-  home.file.".tmux.conf".source =
-    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.tmux.conf";
+  home.file.".tmux.conf".source = config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.tmux.conf";
   home.file.".config/starship.toml".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/starship.toml";
   home.file.".config/ghostty".source =
@@ -91,10 +106,10 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/herdr";
   home.file.".config/wezterm".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/wezterm";
-  home.file."AGENTS.md".source =
-    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/AGENTS.md";
-  Makes it so that claude and all other LLMs behave the same
+  home.file."AGENTS.md".source = config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/AGENTS.md";
+  # Makes it so that claude and all other LLMs behave the same
   home.file.".claude/CLAUDE.md".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/AGENTS.md";
   home.file.".claude/settings.json".source =
-    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";}
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";
+}
