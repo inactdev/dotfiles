@@ -69,7 +69,7 @@ cmd_bootstrap() {
   nix_bin="$(command -v nix)"
   sudo "$nix_bin" run github:nix-darwin/nix-darwin/nix-darwin-26.05#darwin-rebuild -- \
     switch --flake ~/.dotfiles#"$host"
-
+  check_gh_auth
   echo "==> Done. Day-to-day command from now on: ./run.sh rebuild"
 }
 
@@ -92,7 +92,17 @@ cmd_plan() {
 cmd_rebuild() {
   local host="${1:-$DEFAULT_HOST}"
   ln -sfn "$DIR" ~/.dotfiles
-  exec sudo darwin-rebuild switch --flake ~/.dotfiles#"$host"
+  sudo darwin-rebuild switch --flake ~/.dotfiles#"$host"
+  check_gh_auth
+}
+
+check_gh_auth() {
+  local gh_bin
+  gh_bin="$(command -v gh || echo "/etc/profiles/per-user/$(whoami)/bin/gh")"
+  if [ -x "$gh_bin" ] && ! "$gh_bin" auth status >/dev/null 2>&1; then
+    echo ""
+    echo "⚠️  You're not logged into GitHub. Run: gh auth login"
+  fi
 }
 
 case "${1:-help}" in
