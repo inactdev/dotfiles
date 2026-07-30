@@ -38,7 +38,6 @@ in
 
   programs.git = {
     enable = true;
-    name = "Ari";
     userName = "inactdev";
     userEmail = "aris.a.perez@gmail.com";
     extraConfig = {
