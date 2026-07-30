@@ -1,13 +1,15 @@
 return {
-	"Shatur/neovim-ayu",
-	lazy = false,
-	priority = 1000,
-	config = function()
-		require("ayu").setup({
-      mirage = true, -- Use mirage instead of dark for dark background
-      terminal = true, -- Let terminal manage its own colors if false
-      overrides = {} -- Customize specific highlights
-    })
-		vim.cmd.colorscheme("ayu-mirage")
-	end,
-}
+    "folke/tokyonight.nvim",
+    lazy = false,
+    priority = 1000,
+      opts = {
+    transparent = true,
+    styles = {
+      sidebars = "transparent",
+      floats = "transparent",
+    },
+  },
+    config = function()
+      vim.cmd.colorscheme "tokyonight-storm"
+    end
+  }

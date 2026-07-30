@@ -2,7 +2,7 @@ local wezterm = require("wezterm")
 
 local config = wezterm.config_builder()
 
-config.color_scheme = "Ayu Mirage"
+config.color_scheme = 'Tokyo Night Storm (Gogh)'
 config.font = wezterm.font("Inconsolata Nerd Font")
 config.font_size = 20.0
 config.window_background_opacity = 0.8

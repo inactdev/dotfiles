@@ -22,7 +22,6 @@ in
     # dev toolchain
     nodejs
     go
-    gh
     cmake
     gnumake       # nix's name for make
     python3       # instead of python@3.14 — pinned via flake.lock like everything else
@@ -33,12 +32,26 @@ in
     graphviz
     cloudflared
     arp-scan
-    bash
   ];
 
   home.sessionVariables.EDITOR = "nvim";
 
-  programs.git.enable = true;  # completions come with this; no curl script
+  programs.git = {
+    enable = true;
+    name = "Ari";
+    userName = "inactdev";
+    userEmail = "aris.a.perez@gmail.com";
+    extraConfig = {
+      push.autoSetupRemote = true;
+      core.editor = "nvim";
+    };
+  };;
+
+  programs.gh = {
+    enable = true;
+    gitCredentialHelper.enable = true;
+  };
+
   programs.starship.enable = true;
 
   programs.zsh = {
