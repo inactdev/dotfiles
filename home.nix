@@ -38,9 +38,11 @@ in
 
   programs.git = {
     enable = true;
-    userName = "inactdev";
-    userEmail = "aris.a.perez@gmail.com";
-    extraConfig = {
+    settings = {
+      user = {
+        name = "inactdev";
+        email = "aris.a.perez@gmail.com";
+      };
       push.autoSetupRemote = true;
       core.editor = "nvim";
     };
