@@ -21,7 +21,6 @@ in
     jq
     # dev toolchain
     nodejs
-    corepack      # replaces your `npm "corepack"` line; you need this for pnpm
     go
     gh
     cmake
@@ -72,4 +71,10 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.tmux.conf";
   home.file.".config/starship.toml".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/starship.toml";
+  home.file.".config/ghostty".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/ghostty";
+  home.file.".config/herdr".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/herdr";
+  home.file.".config/wezterm".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/wezterm";
 }
