@@ -21,14 +21,14 @@ return {
 			{
 				"<leader>ff",
 				function()
-					Snacks.picker.files()
+          Snacks.picker.files({ hidden = true })
 				end,
 				desc = "Find Files",
 			},
 			{
 				"<leader>fs",
 				function()
-					Snacks.picker.grep()
+          Snacks.picker.grep({ hidden = true })
 				end,
 				desc = "Search Text",
 			},

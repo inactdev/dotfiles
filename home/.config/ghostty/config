@@ -6,3 +6,5 @@ font-family = "Inconsolata Nerd Font"
 mouse-hide-while-typing = true
 shell-integration-features = ssh-terminfo,ssh-env
 theme = TokyoNight Storm
+
+keybind = ctrl+cmd+f=toggle_maximize
