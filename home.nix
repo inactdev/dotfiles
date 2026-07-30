@@ -45,7 +45,7 @@ in
       push.autoSetupRemote = true;
       core.editor = "nvim";
     };
-  };;
+  };
 
   programs.gh = {
     enable = true;
