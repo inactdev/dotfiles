@@ -45,13 +45,26 @@ for pair in $pairs; do
   # off" and stripping a prefix that may still be accurate.
   explain_json=$(herdr agent explain "$pane_id" --json 2>/dev/null) || continue
 
-  # Check evaluated_rules for the handoff rule's own matched flag rather than
-  # just the overall top matched_rule: a higher-priority but unrelated rule
-  # (e.g. transcript_viewer, priority 1000) can briefly outrank the handoff
-  # rule (960) while the backgrounded shell is still genuinely running.
-  is_handoff=$(printf '%s' "$explain_json" | jq -r '
-    [.evaluated_rules[]? | select(.id == "fm_handed_off_shell_running" and .matched == true)] | length > 0
-  ' 2>/dev/null) || continue
+  # Trust herdr's own priority resolution completely: matched_rule is
+  # whichever matched rule currently has the highest priority, so this can
+  # only ever be fm_handed_off_shell_running when nothing that represents
+  # genuine active work (osc_title_working, priority 1100) is also
+  # matching. Do not weaken this to "does the handoff rule match anywhere
+  # in evaluated_rules" - leftover "N shell(s) still running" text can
+  # still sit inside the trailing-lines snapshot window well after the
+  # agent has resumed generating, and that check has no way to tell the
+  # two apart from a single explain call. (This does leave one known,
+  # accepted edge: if a skip_state_update overlay rule such as
+  # transcript_viewer outranks the handoff rule, the hourglass is briefly
+  # not shown even though the agent is still genuinely handed off
+  # underneath the overlay. Low severity, self-corrects once the overlay
+  # closes, and not worth the false-positive risk of trying to see under it.)
+  rule_id=$(printf '%s' "$explain_json" | jq -r '.matched_rule.id // empty' 2>/dev/null) || continue
+  if [ "$rule_id" = "fm_handed_off_shell_running" ]; then
+    is_handoff=true
+  else
+    is_handoff=false
+  fi
 
   agent_tabs="$agent_tabs$tab_id
 "
