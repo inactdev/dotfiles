@@ -39,12 +39,23 @@ for pair in $pairs; do
   tab_id=$2
   IFS=$old_ifs
 
+  # A failed explain call leaves this pane's tab out of agent_tabs entirely,
+  # so the render loop below skips it and its label is left untouched this
+  # tick - failing quiet per-pane rather than defaulting it to "not handed
+  # off" and stripping a prefix that may still be accurate.
+  explain_json=$(herdr agent explain "$pane_id" --json 2>/dev/null) || continue
+
+  # Check evaluated_rules for the handoff rule's own matched flag rather than
+  # just the overall top matched_rule: a higher-priority but unrelated rule
+  # (e.g. transcript_viewer, priority 1000) can briefly outrank the handoff
+  # rule (960) while the backgrounded shell is still genuinely running.
+  is_handoff=$(printf '%s' "$explain_json" | jq -r '
+    [.evaluated_rules[]? | select(.id == "fm_handed_off_shell_running" and .matched == true)] | length > 0
+  ' 2>/dev/null) || continue
+
   agent_tabs="$agent_tabs$tab_id
 "
-
-  explain_json=$(herdr agent explain "$pane_id" --json 2>/dev/null) || continue
-  rule_id=$(printf '%s' "$explain_json" | jq -r '.matched_rule.id // empty' 2>/dev/null) || continue
-  if [ "$rule_id" = "fm_handed_off_shell_running" ]; then
+  if [ "$is_handoff" = "true" ]; then
     handoff_tabs="$handoff_tabs$tab_id
 "
   fi
