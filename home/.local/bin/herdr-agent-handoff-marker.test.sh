@@ -1,6 +1,6 @@
 #!/bin/sh
 # Test suite for herdr-agent-handoff-marker. Runs the real script against a
-# mocked `herdr` CLI (see mock_herdr() below) so it never touches a live
+# mocked `herdr` CLI (see mock_herdr_bin() below) so it never touches a live
 # herdr daemon or any real tab - safe to run any time, by anyone, with no
 # side effects outside a temp dir. Not deployed: home.nix only symlinks the
 # script itself, not this file.
@@ -8,6 +8,9 @@
 # Usage: sh home/.local/bin/herdr-agent-handoff-marker.test.sh
 set -eu
 
+# CDPATH= is a one-command env override, not a typo'd assignment: it stops a
+# user's CDPATH from resolving the cd to some other directory.
+# shellcheck disable=SC1007
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 SCRIPT="$SCRIPT_DIR/herdr-agent-handoff-marker"
 
@@ -214,6 +217,49 @@ EOF
 
   run_marker --only t2
   assert_eq "--only: unscoped pane never touched even without a fixture for it" "t2	⏳ two" "$(renames)"
+  teardown
+}
+
+test_only_accepts_a_comma_separated_list() {
+  setup
+  # All three tabs are genuinely handed off; --only names two of them, so the
+  # third must stay untouched even though it would qualify under --all.
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+p2 t2
+p3 t3
+EOF
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	one
+t2	two
+t3	three
+EOF
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p2.json"
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p3.json"
+
+  run_marker --only t1,t3
+  assert_eq "--only t1,t3: both named tabs renamed, unnamed tab left alone" \
+    "t1	⏳ one
+t3	⏳ three" "$(renames)"
+  teardown
+}
+
+test_only_equals_form_scopes_the_same_way() {
+  setup
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+p2 t2
+EOF
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	one
+t2	two
+EOF
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p2.json"
+
+  run_marker --only=t2
+  assert_eq "--only=t2: = form scopes exactly like the space form" "t2	⏳ two" "$(renames)"
   teardown
 }
 
@@ -445,6 +491,8 @@ test_no_args_refuses
 test_all_sweeps_every_agent_tab
 test_only_scopes_to_named_tabs
 test_only_never_calls_explain_on_out_of_scope_pane
+test_only_accepts_a_comma_separated_list
+test_only_equals_form_scopes_the_same_way
 test_dry_run_prints_but_does_not_rename
 test_idempotent_no_double_prefix
 test_resume_restores_exact_original_label
