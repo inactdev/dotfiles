@@ -113,4 +113,29 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/AGENTS.md";
   home.file.".claude/settings.json".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";
+  home.file.".local/bin/herdr-agent-handoff-marker".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.local/bin/herdr-agent-handoff-marker";
+
+  # Herdr shows "working" the same way for an agent actively thinking and one
+  # that has handed off to a background shell (see the fm_handed_off_shell_running
+  # override in home/.config/herdr/agent-detection/claude.toml). This polls
+  # `herdr agent explain` on a short interval and prefixes the tab label with an
+  # hourglass while that specific rule matches, clearing it once the agent
+  # resumes - see home/.local/bin/herdr-agent-handoff-marker for the logic and
+  # why this is a poller rather than a herdr plugin.
+  launchd.agents.herdr-agent-handoff-marker = {
+    enable = true;
+    config = {
+      ProgramArguments = [ "${config.home.homeDirectory}/.local/bin/herdr-agent-handoff-marker" ];
+      RunAtLoad = true;
+      StartInterval = 5;
+      ProcessType = "Background";
+      EnvironmentVariables = {
+        HOME = config.home.homeDirectory;
+        PATH = "${config.home.profileDirectory}/bin:/opt/homebrew/bin:/usr/bin:/bin";
+      };
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/herdr-agent-handoff-marker.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/herdr-agent-handoff-marker.log";
+    };
+  };
 }

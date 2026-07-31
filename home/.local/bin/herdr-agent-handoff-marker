@@ -1,0 +1,76 @@
+#!/bin/sh
+# Prefixes the tab label of any agent pane herdr currently detects as
+# "handed off" (the fm_handed_off_shell_running rule in
+# ~/.config/herdr/agent-detection/claude.toml) with an hourglass, and
+# strips it again once the agent is back to working directly. Meant to
+# run on a short interval from launchd - see home.nix launchd.agents.
+#
+# Scope is derived entirely from `herdr agent list` each run: a tab is
+# only ever renamed if it currently has a live agent pane in it, so a
+# plain non-agent tab is never touched. No state file - the prefix
+# itself is the only state, so a rename is idempotent and always
+# recoverable by string comparison alone.
+set -eu
+
+PREFIX="⏳ "
+
+command -v herdr >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+
+agents_json=$(herdr agent list 2>/dev/null) || exit 0
+[ -n "$agents_json" ] || exit 0
+
+pairs=$(printf '%s' "$agents_json" | jq -r '.result.agents[]? | "\(.pane_id) \(.tab_id)"' 2>/dev/null) || exit 0
+[ -n "$pairs" ] || exit 0
+
+tabs_json=$(herdr tab list 2>/dev/null) || exit 0
+[ -n "$tabs_json" ] || exit 0
+
+agent_tabs=""
+handoff_tabs=""
+
+old_ifs=$IFS
+IFS='
+'
+for pair in $pairs; do
+  IFS=' '
+  set -- $pair
+  pane_id=$1
+  tab_id=$2
+  IFS=$old_ifs
+
+  agent_tabs="$agent_tabs$tab_id
+"
+
+  explain_json=$(herdr agent explain "$pane_id" --json 2>/dev/null) || continue
+  rule_id=$(printf '%s' "$explain_json" | jq -r '.matched_rule.id // empty' 2>/dev/null) || continue
+  if [ "$rule_id" = "fm_handed_off_shell_running" ]; then
+    handoff_tabs="$handoff_tabs$tab_id
+"
+  fi
+done
+IFS=$old_ifs
+
+printf '%s\n' "$agent_tabs" | sort -u | while IFS= read -r tab_id; do
+  [ -n "$tab_id" ] || continue
+
+  label=$(printf '%s' "$tabs_json" | jq -r --arg id "$tab_id" '.result.tabs[]? | select(.tab_id == $id) | .label' 2>/dev/null) || continue
+  [ -n "$label" ] || continue
+
+  is_handed_off=0
+  if printf '%s\n' "$handoff_tabs" | grep -qxF "$tab_id"; then
+    is_handed_off=1
+  fi
+
+  case "$label" in
+    "$PREFIX"*) has_prefix=1 ;;
+    *) has_prefix=0 ;;
+  esac
+
+  if [ "$is_handed_off" = 1 ] && [ "$has_prefix" = 0 ]; then
+    herdr tab rename "$tab_id" "${PREFIX}${label}" >/dev/null 2>&1 || true
+  elif [ "$is_handed_off" = 0 ] && [ "$has_prefix" = 1 ]; then
+    stripped=${label#"$PREFIX"}
+    herdr tab rename "$tab_id" "$stripped" >/dev/null 2>&1 || true
+  fi
+done
