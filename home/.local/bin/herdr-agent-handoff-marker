@@ -120,6 +120,8 @@ IFS='
 '
 for pair in $pairs; do
   IFS=' '
+  # Deliberate word split of "<pane_id> <tab_id>" on the space above.
+  # shellcheck disable=SC2086
   set -- $pair
   pane_id=$1
   tab_id=$2
