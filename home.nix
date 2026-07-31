@@ -123,10 +123,17 @@ in
   # hourglass while that specific rule matches, clearing it once the agent
   # resumes - see home/.local/bin/herdr-agent-handoff-marker for the logic and
   # why this is a poller rather than a herdr plugin.
+  # --all opts into the whole-workspace sweep deliberately: the script
+  # refuses to run with no scope at all, so this is the one place that is
+  # meant to touch every agent tab. Manual runs and tests should always use
+  # --only <tab-id> (and/or --dry-run) against a throwaway tab instead.
   launchd.agents.herdr-agent-handoff-marker = {
     enable = true;
     config = {
-      ProgramArguments = [ "${config.home.homeDirectory}/.local/bin/herdr-agent-handoff-marker" ];
+      ProgramArguments = [
+        "${config.home.homeDirectory}/.local/bin/herdr-agent-handoff-marker"
+        "--all"
+      ];
       RunAtLoad = true;
       StartInterval = 5;
       ProcessType = "Background";

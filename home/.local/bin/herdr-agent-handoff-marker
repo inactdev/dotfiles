@@ -2,17 +2,88 @@
 # Prefixes the tab label of any agent pane herdr currently detects as
 # "handed off" (the fm_handed_off_shell_running rule in
 # ~/.config/herdr/agent-detection/claude.toml) with an hourglass, and
-# strips it again once the agent is back to working directly. Meant to
-# run on a short interval from launchd - see home.nix launchd.agents.
+# strips it again once the agent is back to working directly.
 #
-# Scope is derived entirely from `herdr agent list` each run: a tab is
-# only ever renamed if it currently has a live agent pane in it, so a
-# plain non-agent tab is never touched. No state file - the prefix
-# itself is the only state, so a rename is idempotent and always
-# recoverable by string comparison alone.
+# An explicit scope is always required (--all or --only) - there is no
+# default whole-workspace sweep, so the script cannot repaint tabs it
+# was not deliberately pointed at. Only the launchd job (home.nix) should
+# pass --all; manual runs and tests should use --only <tab-id> and/or
+# --dry-run against a throwaway tab, never the bare command against a
+# live herdr session.
+#
+# No state file - the prefix itself is the only state, so a rename is
+# idempotent and always recoverable by string comparison alone.
 set -eu
 
 PREFIX="⏳ "
+
+usage() {
+  cat <<'EOF'
+usage: herdr-agent-handoff-marker (--all | --only <tab-id>[,<tab-id>...]) [--dry-run]
+
+  --all             Sweep every agent tab herdr currently reports. This is
+                     the real, whole-workspace mode - only the launchd job
+                     should use it.
+  --only <ids>       Only ever consider the given comma-separated tab ids,
+                     even if other agent tabs exist. Use this for manual
+                     runs and tests against a throwaway tab.
+  --dry-run          Print what would be renamed instead of renaming it.
+                     Combine with --only for safe manual testing.
+
+One of --all or --only is required - there is no default scope.
+EOF
+}
+
+mode=""
+only_tabs=""
+dry_run=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all)
+      mode="all"
+      shift
+      ;;
+    --only)
+      mode="only"
+      only_tabs=${2:-}
+      shift 2
+      ;;
+    --only=*)
+      mode="only"
+      only_tabs=${1#--only=}
+      shift
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "herdr-agent-handoff-marker: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$mode" ]; then
+  echo "herdr-agent-handoff-marker: refusing to run without an explicit scope (--all or --only)" >&2
+  usage >&2
+  exit 2
+fi
+
+only_set=""
+if [ "$mode" = "only" ]; then
+  if [ -z "$only_tabs" ]; then
+    echo "herdr-agent-handoff-marker: --only requires at least one tab id" >&2
+    exit 2
+  fi
+  only_set=$(printf '%s' "$only_tabs" | tr ',' '\n')
+fi
 
 command -v herdr >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -38,6 +109,14 @@ for pair in $pairs; do
   pane_id=$1
   tab_id=$2
   IFS=$old_ifs
+
+  # --only structurally excludes every other tab right here, before this
+  # pane's content is even read: with --only, an out-of-scope pane is
+  # never explained and never appears in agent_tabs, so the render loop
+  # below has no way to touch it.
+  if [ "$mode" = "only" ] && ! printf '%s\n' "$only_set" | grep -qxF "$tab_id"; then
+    continue
+  fi
 
   # A failed explain call leaves this pane's tab out of agent_tabs entirely,
   # so the render loop below skips it and its label is left untouched this
@@ -92,9 +171,18 @@ printf '%s\n' "$agent_tabs" | sort -u | while IFS= read -r tab_id; do
   esac
 
   if [ "$is_handed_off" = 1 ] && [ "$has_prefix" = 0 ]; then
-    herdr tab rename "$tab_id" "${PREFIX}${label}" >/dev/null 2>&1 || true
+    new_label="${PREFIX}${label}"
+    if [ "$dry_run" = 1 ]; then
+      printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$new_label"
+    else
+      herdr tab rename "$tab_id" "$new_label" >/dev/null 2>&1 || true
+    fi
   elif [ "$is_handed_off" = 0 ] && [ "$has_prefix" = 1 ]; then
     stripped=${label#"$PREFIX"}
-    herdr tab rename "$tab_id" "$stripped" >/dev/null 2>&1 || true
+    if [ "$dry_run" = 1 ]; then
+      printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$stripped"
+    else
+      herdr tab rename "$tab_id" "$stripped" >/dev/null 2>&1 || true
+    fi
   fi
 done
