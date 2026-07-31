@@ -81,6 +81,7 @@ in
       tww = "tmux new -s work-windows";
       tdd = "tmux new -s daemons";
       cssh = "infocmp -x xterm-ghostty | ssh gh codespace ssh tic -x -h";
+      cc = "claude --dangerously-skip-permissions";
     };
     initContent = ''
       eval "$(/opt/homebrew/bin/brew shellenv)"
