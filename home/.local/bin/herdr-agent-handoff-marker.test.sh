@@ -113,8 +113,13 @@ teardown() {
 }
 
 run_marker() {
+  # Hermetic PATH, never the ambient one: a real herdr installed elsewhere
+  # (e.g. /opt/homebrew/bin/herdr) must be unreachable from every test, or a
+  # test that deletes the mock silently drives the owner's live session
+  # instead. $MOCK_DIR supplies herdr and jq; /usr/bin and /bin supply the
+  # handful of coreutils the script needs (sort, grep, tr, cat).
   # shellcheck disable=SC2068
-  FIXTURES="$FIXTURES" PATH="$MOCK_DIR:$PATH" "$SCRIPT" $@
+  FIXTURES="$FIXTURES" PATH="$MOCK_DIR:/usr/bin:/bin" "$SCRIPT" $@
 }
 
 renames() {
@@ -306,7 +311,7 @@ test_herdr_missing_exits_clean() {
   setup
   rm -f "$MOCK_DIR/herdr"
   set +e
-  out=$(PATH="$MOCK_DIR:$PATH" "$SCRIPT" --all 2>&1)
+  out=$(FIXTURES="$FIXTURES" PATH="$MOCK_DIR:/usr/bin:/bin" "$SCRIPT" --all 2>&1)
   code=$?
   set -e
   assert_eq "herdr absent: exits 0" "0" "$code"
@@ -333,6 +338,109 @@ EOF
   teardown
 }
 
+test_path_isolation_hides_a_real_herdr() {
+  setup
+  # A real herdr genuinely lives on this machine's PATH (/opt/homebrew/bin).
+  # Stand in for it here and prove no test can reach it: the mock is deleted,
+  # so if run_marker leaked the ambient PATH the script would find and drive
+  # this one instead - which is how a test suite ends up renaming the owner's
+  # live tabs.
+  REAL_DIR="$TMP/realbin"
+  mkdir -p "$REAL_DIR"
+  cat >"$REAL_DIR/herdr" <<EOF
+#!/bin/sh
+printf 'invoked: %s\n' "\$*" >>"$FIXTURES/live_herdr.log"
+exit 0
+EOF
+  chmod +x "$REAL_DIR/herdr"
+  rm -f "$MOCK_DIR/herdr"
+
+  set +e
+  out=$(
+    PATH="$REAL_DIR:$PATH"
+    export PATH
+    run_marker --all 2>&1
+  )
+  code=$?
+  set -e
+  assert_eq "path isolation: exits 0 with no herdr on the hermetic PATH" "0" "$code"
+  assert_eq "path isolation: no output" "" "$out"
+  assert_eq "path isolation: herdr on the ambient PATH is never invoked" "" "$(cat "$FIXTURES/live_herdr.log" 2>/dev/null || true)"
+  teardown
+}
+
+test_stale_prefix_stripped_when_pane_is_no_longer_an_agent() {
+  setup
+  # The pane behind t1 has stopped being reported as an agent at all (owner
+  # exited Claude while the handed-off shell kept running), so nothing in
+  # `herdr agent list` mentions it. Its hourglass must still come off, and
+  # t2's must not - it is outside the --only scope.
+  agents_json </dev/null >"$FIXTURES/agents.json"
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	⏳ my-custom-name
+t2	⏳ other
+EOF
+
+  run_marker --only t1
+  assert_eq "stale prefix: stripped to the exact original label, out-of-scope prefixed tab untouched" "t1	my-custom-name" "$(renames)"
+  teardown
+}
+
+test_conflicting_scope_flags_rejected() {
+  setup
+  set +e
+  out=$(run_marker --only t1 --all 2>&1)
+  code=$?
+  set -e
+  assert_eq "--only + --all: exits 2 instead of silently sweeping everything" "2" "$code"
+  assert_eq "--only + --all: no renames issued" "" "$(renames)"
+  case "$out" in
+    *"conflicting scope flags"*) : ;;
+    *)
+      fail_count=$((fail_count + 1))
+      printf 'FAIL - --only + --all: explains the conflict\n  actual: %s\n' "$out"
+      ;;
+  esac
+
+  set +e
+  out=$(run_marker --all --only t1 2>&1)
+  code=$?
+  set -e
+  assert_eq "--all + --only (reverse order): also exits 2" "2" "$code"
+  teardown
+}
+
+test_only_without_a_value_exits_2() {
+  setup
+  set +e
+  out=$(run_marker --only 2>&1)
+  code=$?
+  set -e
+  assert_eq "--only with no value: exits 2, not a bare set -e abort (1)" "2" "$code"
+  assert_eq "--only with no value: no renames issued" "" "$(renames)"
+  case "$out" in
+    *"--only requires at least one tab id"*) : ;;
+    *)
+      fail_count=$((fail_count + 1))
+      printf 'FAIL - --only with no value: prints the documented message\n  actual: %s\n' "$out"
+      ;;
+  esac
+  teardown
+}
+
+test_null_label_is_skipped() {
+  setup
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+EOF
+  printf '{"result":{"tabs":[{"tab_id":"t1","label":null}]}}' >"$FIXTURES/tabs.json"
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
+
+  run_marker --only t1
+  assert_eq "null label: tab skipped, never renamed to a literal 'null'" "" "$(renames)"
+  teardown
+}
+
 test_no_args_refuses
 test_all_sweeps_every_agent_tab
 test_only_scopes_to_named_tabs
@@ -344,6 +452,11 @@ test_overlay_rule_does_not_false_positive
 test_explain_failure_leaves_tab_untouched
 test_herdr_missing_exits_clean
 test_herdr_failing_exits_clean
+test_path_isolation_hides_a_real_herdr
+test_stale_prefix_stripped_when_pane_is_no_longer_an_agent
+test_conflicting_scope_flags_rejected
+test_only_without_a_value_exits_2
+test_null_label_is_skipped
 
 echo ""
 echo "$pass_count passed, $fail_count failed"
