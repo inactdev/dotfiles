@@ -1,6 +1,7 @@
 #!/bin/sh
-# Prefixes the tab label of any agent pane herdr currently detects as
-# "handed off" (the fm_handed_off_shell_running rule in
+# Prefixes the tab label of any crewmate task tab (`fm-*`, see the scoping
+# note below) whose agent pane herdr currently detects as "handed off"
+# (the fm_handed_off_shell_running rule in
 # ~/.config/herdr/agent-detection/claude.toml) with an hourglass, and
 # strips it again once the agent is back to working directly - or once the
 # pane has stopped being an agent at all, so the prefix can never outlive
