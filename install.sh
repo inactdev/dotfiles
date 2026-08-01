@@ -151,7 +151,7 @@ install_claude_code() {
   npm install -g @anthropic-ai/claude-code >/dev/null
 }
 
-# Baseline config symlinks + zshrc. Ghostty/wezterm/tmux/herdr are all
+# Baseline config symlinks + zshrc. Ghostty/wezterm/herdr are all
 # client-side terminal concerns (the terminal app runs on the developer's
 # machine, not inside the codespace container) so none of them belong
 # here - same reasoning as the "no font install" rule below.
@@ -169,7 +169,9 @@ install_symlinks() {
 # home/.claude/settings.json with the axi-tool hooks stripped (those tools
 # are explicitly not installed in codespaces, personal or work); the work
 # variant additionally drops skipDangerousModePermissionPrompt, since work
-# posture's `cc` alias never uses --dangerously-skip-permissions.
+# posture's `cc` alias never uses --dangerously-skip-permissions, and pins
+# the standing opus/xhigh work override (see README.md), which work-posture
+# codespaces inherit.
 install_claude_settings() {
   local posture="$1" source
   if [ "$posture" = "personal" ]; then
