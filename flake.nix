@@ -42,8 +42,24 @@
         ];
       };
 
+      # home-linux: the captain's home Ubuntu 24.04 box. No nix-darwin here -
+      # it's a standalone home-manager configuration (not a darwinSystem)
+      # sharing home.nix with personal-mac; home.nix conditionalizes the
+      # Darwin-only pieces (launchd, herdr) on pkgs.stdenv.isDarwin.
+      # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- switch --flake .#home-linux
+      homeConfigurations."home-linux" = home-manager.lib.homeManagerConfiguration {
+        pkgs = import nixpkgs {
+          system = "x86_64-linux";
+          config.allowUnfree = true;
+        };
+        extraSpecialArgs = { inherit user; };
+        modules = [ ./home.nix ];
+      };
+
       # The "work" host is NOT a Nix host - it's the brew-only --no-nix path
-      # under work/ (see README.md), so it never appears here.
+      # under work/ (see README.md), so it never appears here. There is no
+      # work-linux host either: GitHub Codespaces (see install.sh) covers
+      # work-on-Linux instead.
       # Later: "ci" host goes here (personal-mac minus Homebrew) for GitHub Actions.
     };
 }
