@@ -14,8 +14,9 @@ and/or `--no-nix` explicitly - see `./run.sh help`.
 
 ## The work host (`--no-nix`)
 
-Home computers get the full setup via Nix + home-manager
-(`flake.nix` / `home.nix` / `configuration.nix`). Corporate Macs where
+Home computers (`personal-mac`, `home-linux`) get the full setup via
+Nix + home-manager (`flake.nix` / `home.nix`, plus `configuration.nix`
+on the Mac). Corporate Macs where
 Nix isn't allowed use the `work` host instead: `./run.sh bootstrap work
 --no-nix` installs a smaller, captain-approved package set with plain
 Homebrew and wires up configs with plain shell - no Nix, no
@@ -38,12 +39,21 @@ home-manager. Everything for that path lives under `work/`:
   `jq 'del(.hooks, .skipDangerousModePermissionPrompt)' home/.claude/settings.json > work/claude-settings.json`
 
 Deliberately excluded from the work host, by captain decision: tmux,
-wezterm, herdr, opensuperwhisper, docker-desktop, ollama, cloudflared,
-arp-scan, imagemagick, graphviz, tree-sitter, cmake, make, watchman,
-fzf, nixfmt.
+wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
+imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
 Re-running `./run.sh bootstrap work --no-nix` (or `./run.sh rebuild`
 once `work` is the remembered/chosen host) is safe - every step is
 idempotent. The bootstrap ends with a short summary of anything it
 couldn't finish (GitHub login, MDM-locked macOS settings, a still-unset
 git identity).
+
+## GitHub Codespaces
+
+Codespaces never goes through `run.sh`: GitHub auto-clones this repo
+and runs `install.sh` at container creation, fully non-interactively.
+It picks a personal or work posture by comparing the codespace's repo
+owner against this repo's own origin owner (anything but a match,
+including undeterminable, gets the locked-down work default) and
+installs the codespaces kit under `codespaces/`. Details live in the
+comments in `install.sh` and the codespaces entry in `AGENTS.md`.
