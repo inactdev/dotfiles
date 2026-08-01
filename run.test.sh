@@ -73,6 +73,7 @@ run_choose_host() {
     # shellcheck disable=SC2030
     PATH="$MOCK_DIR:$PATH"
     choose_host <<<"$answer"
+    # shellcheck disable=SC2153 # HOST is set by choose_host, sourced dynamically above
     echo "HOST=$HOST"
   )
 }
@@ -176,6 +177,102 @@ test_explicit_work_host_implies_no_nix() {
   teardown
 }
 
+# Records the argv of every command run.sh shells out to, so the tests below
+# can assert WHICH switcher a host branches to without running a real switch.
+# `sudo` and `darwin-rebuild` are mocked too: on the home-linux path they must
+# never be reached at all.
+mock_switchers() {
+  local dir=$1
+  local name
+  for name in nix sudo darwin-rebuild gh; do
+    cat >"$dir/$name" <<MOCK
+#!/bin/sh
+echo "$name \$*" >>"$TMP/invoked.log"
+exit 0
+MOCK
+    chmod +x "$dir/$name"
+  done
+  : >"$TMP/invoked.log"
+}
+
+# Runs one of run.sh's command functions with every switcher mocked and HOME
+# pointed at scratch, so \`ln -sfn "\$DIR" ~/.dotfiles\` and any generation-link
+# probe stay inside the sandbox and never touch the real machine.
+run_cmd_sandboxed() {
+  local fn=$1 host=$2
+  mock_switchers "$MOCK_DIR"
+  mkdir -p "$TMP/home"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
+    MARKER="$TMP/.dotfiles-host"
+    # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
+    no_nix=0
+    HOME="$TMP/home"
+    # shellcheck disable=SC2031 # PATH is deliberately remocked per subshell
+    PATH="$MOCK_DIR:$PATH"
+    "$fn" "$host" >/dev/null 2>&1
+  ) || true
+  cat "$TMP/invoked.log"
+}
+
+test_rebuild_home_linux_uses_home_manager_not_darwin_rebuild() {
+  setup
+  out=$(run_cmd_sandboxed cmd_rebuild "home-linux")
+  assert_contains "rebuild home-linux runs home-manager switch" "$out" "home-manager -- switch --flake"
+  assert_contains "rebuild home-linux targets the home-linux flake attr" "$out" ".dotfiles#home-linux"
+  case "$out" in
+    *darwin-rebuild*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - rebuild home-linux must never invoke darwin-rebuild:"
+      echo "$out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - rebuild home-linux never invokes darwin-rebuild/sudo nix-darwin"
+      ;;
+  esac
+  teardown
+}
+
+test_rebuild_personal_mac_still_uses_darwin_rebuild() {
+  setup
+  out=$(run_cmd_sandboxed cmd_rebuild "personal-mac")
+  assert_contains "rebuild personal-mac still runs sudo darwin-rebuild" "$out" \
+    "sudo darwin-rebuild switch --flake"
+  assert_contains "rebuild personal-mac targets the personal-mac flake attr" "$out" \
+    ".dotfiles#personal-mac"
+  teardown
+}
+
+test_plan_home_linux_builds_the_home_manager_activation_package() {
+  setup
+  out=$(run_cmd_sandboxed cmd_plan "home-linux")
+  assert_contains "plan home-linux builds homeConfigurations.<host>.activationPackage" "$out" \
+    "homeConfigurations.home-linux.activationPackage"
+  case "$out" in
+    *darwinConfigurations*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - plan home-linux must not build a darwinConfigurations attr:"
+      echo "$out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - plan home-linux never builds a darwinConfigurations attr"
+      ;;
+  esac
+  teardown
+}
+
+test_plan_personal_mac_still_builds_the_darwin_system() {
+  setup
+  out=$(run_cmd_sandboxed cmd_plan "personal-mac")
+  assert_contains "plan personal-mac builds darwinConfigurations.<host>.system" "$out" \
+    "darwinConfigurations.personal-mac.system"
+  teardown
+}
+
 test_no_username_hardcoded_in_run_sh() {
   hits=$(mktemp)
   if grep -RIn -e '/Users/inactdev' -e 'inactdev' "$SCRIPT" >"$hits" 2>/dev/null; then
@@ -198,6 +295,10 @@ test_explicit_work_host_on_linux_is_rejected_by_bootstrap_no_nix
 test_explicit_home_linux_host_still_resolves_to_home_linux
 test_explicit_personal_mac_host_still_resolves_to_personal_mac
 test_explicit_work_host_implies_no_nix
+test_rebuild_home_linux_uses_home_manager_not_darwin_rebuild
+test_rebuild_personal_mac_still_uses_darwin_rebuild
+test_plan_home_linux_builds_the_home_manager_activation_package
+test_plan_personal_mac_still_builds_the_darwin_system
 
 echo ""
 echo "$pass_count passed, $fail_count failed"
