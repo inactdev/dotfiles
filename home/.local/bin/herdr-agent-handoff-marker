@@ -15,6 +15,23 @@
 #
 # No state file - the prefix itself is the only state, so a rename is
 # idempotent and always recoverable by string comparison alone.
+#
+# The hourglass is scoped to crewmate task tabs only, never the primary
+# firstmate/secondmate agent's own tab. The fm_handed_off_shell_running
+# rule is pure screen-scraping over pane content, so it matches equally
+# whether the "N shell(s) still running" text shows up in a crewmate pane
+# or in the primary's own pane - it has no notion of tab role. herdr's
+# AgentInfo/TabInfo carry no per-tab "role" field either, so the only
+# structural signal available is the tab label: firstmate creates every
+# crewmate task tab with an `fm-<id>` label (see backends/herdr.sh in the
+# firstmate repo, `expected_task_label="fm-$id"`) and verifies it against
+# its own journal, while the primary/secondmate's own tab is never given
+# that label. A crewmate tab matching `fm-*` (after stripping any existing
+# hourglass) is the only kind ever marked; a tab that already carries the
+# prefix but is NOT `fm-*` self-heals (prefix removed unconditionally,
+# regardless of handoff state) so a stray mark from before this scoping
+# existed - or a rename that moved a tab out of the fm-* convention -
+# cannot linger.
 set -eu
 
 PREFIX="⏳ "
@@ -214,18 +231,35 @@ printf '%s\n%s\n' "$agent_tabs" "$prefixed_tabs" | sort -u | while IFS= read -r 
   fi
 
   case "$label" in
-    "$PREFIX"*) has_prefix=1 ;;
-    *) has_prefix=0 ;;
+    "$PREFIX"*) has_prefix=1; bare_label=${label#"$PREFIX"} ;;
+    *) has_prefix=0; bare_label=$label ;;
   esac
 
-  if [ "$is_handed_off" = 1 ] && [ "$has_prefix" = 0 ]; then
+  # The only tab kind ever eligible for the hourglass: firstmate's own
+  # crewmate task-tab label convention (fm-<id>). Primary and secondmate
+  # tabs never carry this label, so they never match here.
+  case "$bare_label" in
+    fm-*) is_crewmate=1 ;;
+    *) is_crewmate=0 ;;
+  esac
+
+  if [ "$has_prefix" = 1 ] && [ "$is_crewmate" = 0 ]; then
+    # Self-heal: a prefix on a non-crewmate tab is never correct, no matter
+    # its handoff state - strip it unconditionally, ignoring is_unknown too,
+    # since the crewmate check is label-only and needs no explain result.
+    if [ "$dry_run" = 1 ]; then
+      printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$bare_label"
+    else
+      herdr tab rename "$tab_id" "$bare_label" >/dev/null 2>&1 || true
+    fi
+  elif [ "$is_crewmate" = 1 ] && [ "$is_handed_off" = 1 ] && [ "$has_prefix" = 0 ]; then
     new_label="${PREFIX}${label}"
     if [ "$dry_run" = 1 ]; then
       printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$new_label"
     else
       herdr tab rename "$tab_id" "$new_label" >/dev/null 2>&1 || true
     fi
-  elif [ "$is_handed_off" = 0 ] && [ "$has_prefix" = 1 ] && [ "$is_unknown" = 0 ]; then
+  elif [ "$is_crewmate" = 1 ] && [ "$is_handed_off" = 0 ] && [ "$has_prefix" = 1 ] && [ "$is_unknown" = 0 ]; then
     stripped=${label#"$PREFIX"}
     if [ "$dry_run" = 1 ]; then
       printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$stripped"

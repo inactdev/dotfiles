@@ -169,14 +169,14 @@ p1 t1
 p2 t2
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
-t2	two
+t1	fm-one
+t2	fm-two
 EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
   explain_json osc_title_working >"$FIXTURES/explain_p2.json"
 
   run_marker --all
-  assert_eq "--all: hands-off tab renamed" "t1	⏳ one" "$(renames)"
+  assert_eq "--all: hands-off crewmate tab renamed" "t1	⏳ fm-one" "$(renames)"
   teardown
 }
 
@@ -188,14 +188,14 @@ p1 t1
 p2 t2
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
-t2	two
+t1	fm-one
+t2	fm-two
 EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p2.json"
 
   run_marker --only t2
-  assert_eq "--only: named tab renamed, other real agent tab left alone" "t2	⏳ two" "$(renames)"
+  assert_eq "--only: named tab renamed, other real agent tab left alone" "t2	⏳ fm-two" "$(renames)"
   teardown
 }
 
@@ -206,8 +206,8 @@ p1 t1
 p2 t2
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
-t2	two
+t1	fm-one
+t2	fm-two
 EOF
   # No explain_p1.json fixture at all: if the script ever asked the mock to
   # explain p1 while scoped to --only t2, the mock would exit 1 - which the
@@ -216,7 +216,7 @@ EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p2.json"
 
   run_marker --only t2
-  assert_eq "--only: unscoped pane never touched even without a fixture for it" "t2	⏳ two" "$(renames)"
+  assert_eq "--only: unscoped pane never touched even without a fixture for it" "t2	⏳ fm-two" "$(renames)"
   teardown
 }
 
@@ -230,9 +230,9 @@ p2 t2
 p3 t3
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
-t2	two
-t3	three
+t1	fm-one
+t2	fm-two
+t3	fm-three
 EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p2.json"
@@ -240,8 +240,8 @@ EOF
 
   run_marker --only t1,t3
   assert_eq "--only t1,t3: both named tabs renamed, unnamed tab left alone" \
-    "t1	⏳ one
-t3	⏳ three" "$(renames)"
+    "t1	⏳ fm-one
+t3	⏳ fm-three" "$(renames)"
   teardown
 }
 
@@ -252,14 +252,14 @@ p1 t1
 p2 t2
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
-t2	two
+t1	fm-one
+t2	fm-two
 EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p2.json"
 
   run_marker --only=t2
-  assert_eq "--only=t2: = form scopes exactly like the space form" "t2	⏳ two" "$(renames)"
+  assert_eq "--only=t2: = form scopes exactly like the space form" "t2	⏳ fm-two" "$(renames)"
   teardown
 }
 
@@ -269,7 +269,7 @@ test_dry_run_prints_but_does_not_rename() {
 p1 t1
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
+t1	fm-one
 EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
 
@@ -291,12 +291,12 @@ test_idempotent_no_double_prefix() {
 p1 t1
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	⏳ one
+t1	⏳ fm-one
 EOF
   explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
 
   run_marker --only t1
-  assert_eq "idempotent: already-prefixed handed-off tab triggers no rename" "" "$(renames)"
+  assert_eq "idempotent: already-prefixed handed-off crewmate tab triggers no rename" "" "$(renames)"
   teardown
 }
 
@@ -306,12 +306,12 @@ test_resume_restores_exact_original_label() {
 p1 t1
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	⏳ my-custom-name
+t1	⏳ fm-my-custom-name
 EOF
   explain_json osc_title_working >"$FIXTURES/explain_p1.json"
 
   run_marker --only t1
-  assert_eq "resume: prefix stripped, custom name restored exactly" "t1	my-custom-name" "$(renames)"
+  assert_eq "resume: prefix stripped, custom name restored exactly" "t1	fm-my-custom-name" "$(renames)"
   teardown
 }
 
@@ -326,7 +326,7 @@ test_overlay_rule_does_not_false_positive() {
 p1 t1
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	one
+t1	fm-one
 EOF
   explain_json osc_title_working fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
 
@@ -344,12 +344,95 @@ test_explain_failure_leaves_tab_untouched() {
 p1 t1
 EOF
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	⏳ one
+t1	⏳ fm-one
 EOF
   # deliberately no explain_p1.json fixture
 
   run_marker --all
-  assert_eq "failed explain: prefixed tab left untouched, not stripped" "" "$(renames)"
+  assert_eq "failed explain: prefixed crewmate tab left untouched, not stripped" "" "$(renames)"
+  teardown
+}
+
+test_primary_shaped_tab_never_marked_even_when_handed_off() {
+  setup
+  # Regression: the captain's own tab (or a secondmate's) is never labeled
+  # fm-<id> - only crewmate task tabs created by a spawn are. The
+  # fm_handed_off_shell_running rule is pure content screen-scraping, so it
+  # matches identically whether the "N shell(s) still running" text shows
+  # up in a crewmate pane or the primary's own pane. This is the bug the
+  # captain caught live: a primary-shaped tab (label "1", the ordinary
+  # herdr-assigned tab name, not fm-*) must never get the hourglass no
+  # matter what matched_rule says.
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+EOF
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	1
+EOF
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
+
+  run_marker --all
+  assert_eq "primary-shaped tab: handed-off content never earns the hourglass" "" "$(renames)"
+  teardown
+}
+
+test_secondmate_shaped_tab_never_marked_even_when_handed_off() {
+  setup
+  # Same shape as the primary case, but with a secondmate's own tab label
+  # (2ndmate-<id> is the secondmate's home-workspace label; the secondmate's
+  # own tab within it, like the primary's, is never fm-*).
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+EOF
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	2ndmate-abc123
+EOF
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
+
+  run_marker --all
+  assert_eq "secondmate-shaped tab: handed-off content never earns the hourglass" "" "$(renames)"
+  teardown
+}
+
+test_self_heals_stray_prefix_on_non_crewmate_tab_even_while_still_handed_off() {
+  setup
+  # Simulates recovering from the pre-fix bug: a primary-shaped tab already
+  # carries a stray hourglass from before this scoping existed, and its pane
+  # content is STILL matching the handoff rule. The old is_handed_off/
+  # has_prefix pairing alone would never strip this (both "mark" and
+  # "recover" branches require has_prefix to disagree with is_handed_off).
+  # Self-heal must strip it unconditionally because the tab isn't fm-*.
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+EOF
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	⏳ 1
+EOF
+  explain_json fm_handed_off_shell_running >"$FIXTURES/explain_p1.json"
+
+  run_marker --all
+  assert_eq "self-heal: stray hourglass stripped from non-crewmate tab despite still-matching handoff content" \
+    "t1	1" "$(renames)"
+  teardown
+}
+
+test_self_heals_stray_prefix_on_non_crewmate_tab_with_failed_explain() {
+  setup
+  # Self-heal must not depend on a successful explain call either: the
+  # crewmate check is label-only, so even an explain failure (which
+  # protects a genuine crewmate's prefix via is_unknown) must not block
+  # stripping a stray mark from a tab that was never fm-* to begin with.
+  agents_json <<'EOF' >"$FIXTURES/agents.json"
+p1 t1
+EOF
+  tabs_json <<'EOF' >"$FIXTURES/tabs.json"
+t1	⏳ 1
+EOF
+  # deliberately no explain_p1.json fixture
+
+  run_marker --all
+  assert_eq "self-heal: stray hourglass stripped from non-crewmate tab even when explain fails" \
+    "t1	1" "$(renames)"
   teardown
 }
 
@@ -423,12 +506,12 @@ test_stale_prefix_stripped_when_pane_is_no_longer_an_agent() {
   # t2's must not - it is outside the --only scope.
   agents_json </dev/null >"$FIXTURES/agents.json"
   tabs_json <<'EOF' >"$FIXTURES/tabs.json"
-t1	⏳ my-custom-name
-t2	⏳ other
+t1	⏳ fm-my-custom-name
+t2	⏳ fm-other
 EOF
 
   run_marker --only t1
-  assert_eq "stale prefix: stripped to the exact original label, out-of-scope prefixed tab untouched" "t1	my-custom-name" "$(renames)"
+  assert_eq "stale prefix: stripped to the exact original label, out-of-scope prefixed tab untouched" "t1	fm-my-custom-name" "$(renames)"
   teardown
 }
 
@@ -498,6 +581,10 @@ test_idempotent_no_double_prefix
 test_resume_restores_exact_original_label
 test_overlay_rule_does_not_false_positive
 test_explain_failure_leaves_tab_untouched
+test_primary_shaped_tab_never_marked_even_when_handed_off
+test_secondmate_shaped_tab_never_marked_even_when_handed_off
+test_self_heals_stray_prefix_on_non_crewmate_tab_even_while_still_handed_off
+test_self_heals_stray_prefix_on_non_crewmate_tab_with_failed_explain
 test_herdr_missing_exits_clean
 test_herdr_failing_exits_clean
 test_path_isolation_hides_a_real_herdr
