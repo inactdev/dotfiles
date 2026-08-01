@@ -47,6 +47,8 @@
       # kept for app HTTPS work; may move to per-app provisioning when
       # Inkwell's transport decision lands
       "mkcert"
+      # mkcert's Firefox trust-store companion
+      "nss"
       # this repo's own test suites lint with it
       "shellcheck"
       # Inkwell project generation

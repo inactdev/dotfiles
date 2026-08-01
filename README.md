@@ -65,7 +65,7 @@ Nix, no home-manager. Everything for that path lives under `work/`:
     this divergence as intentional, not drift, when comparing the two
     files.
 
-Deliberately excluded from the work host, by captain decision: tmux,
+Deliberately excluded from the work host, by captain decision:
 wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
 imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
