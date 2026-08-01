@@ -38,9 +38,8 @@ home-manager. Everything for that path lives under `work/`:
   `jq 'del(.hooks, .skipDangerousModePermissionPrompt)' home/.claude/settings.json > work/claude-settings.json`
 
 Deliberately excluded from the work host, by captain decision: tmux,
-wezterm, herdr, opensuperwhisper, docker-desktop, ollama, cloudflared,
-arp-scan, imagemagick, graphviz, tree-sitter, cmake, make, watchman,
-fzf, nixfmt.
+wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
+imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
 Re-running `./run.sh bootstrap work --no-nix` (or `./run.sh rebuild`
 once `work` is the remembered/chosen host) is safe - every step is

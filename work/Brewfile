@@ -22,4 +22,5 @@ brew "zsh-syntax-highlighting"
 
 cask "ghostty"
 cask "claude-code"
+cask "docker-desktop"
 cask "font-inconsolata-nerd-font"
