@@ -12,9 +12,16 @@
     nix-homebrew.url = "github:zhaofengli/nix-homebrew";
   };
 
-  outputs = inputs@{ self, nix-darwin, nix-homebrew, home-manager, nixpkgs }:
+  outputs =
+    inputs@{
+      self,
+      nix-darwin,
+      nix-homebrew,
+      home-manager,
+      nixpkgs,
+    }:
     let
-      user = "inactdev";  # <-- output of `whoami`, nothing else
+      user = "inactdev"; # <-- output of `whoami`, nothing else
     in
     {
       # Nix HOSTS live here. Each entry below is one named machine recipe.
