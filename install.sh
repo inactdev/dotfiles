@@ -69,9 +69,8 @@ link_with_backup() {
 
 install_apt_packages() {
   echo "==> apt: base packages"
-  export DEBIAN_FRONTEND=noninteractive
-  sudo apt-get update -y
-  sudo apt-get install -y --no-install-recommends \
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl unzip git zsh \
     ripgrep fd-find jq \
     zsh-autosuggestions zsh-syntax-highlighting direnv
@@ -88,7 +87,7 @@ install_node() {
   fi
   echo "==> node 22.x (NodeSource - apt's nodejs is 18.x, too old for the npm tools below)"
   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null
-  sudo apt-get install -y --no-install-recommends nodejs
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
 }
 
 link_fd() {
