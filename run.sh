@@ -230,7 +230,7 @@ done
 set -- ${args[@]+"${args[@]}"}
 
 case "${1:-bootstrap}" in
-  bootstrap) shift; cmd_bootstrap "$@" ;;
+  bootstrap) if [ $# -gt 0 ]; then shift; fi; cmd_bootstrap "$@" ;;
   plan)      shift; cmd_plan "$@" ;;
   rebuild)   shift; cmd_rebuild "$@" ;;
   choose)    choose_host ;;
