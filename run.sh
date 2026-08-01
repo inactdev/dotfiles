@@ -11,7 +11,7 @@ Usage: ./run.sh [command] [host] [--no-nix]
 With no command at all, ./run.sh behaves like `./run.sh bootstrap`.
 
 WHAT IS A "host"?
-  A host is a named machine recipe — a label, not a folder. Every machine
+  A host is a named machine recipe - a label, not a folder. Every machine
   clones this same repo; the host name picks which recipe gets applied,
   so different machines can get different package lists from identical
   code.
@@ -26,10 +26,10 @@ PICKING A HOST
     1. A remembered choice from a previous run on this machine.
     2. On an interactive terminal with nothing remembered yet, it asks
        once: "home computer or work computer?" and remembers the answer.
-    3. Otherwise it fails with an explicit instruction — it never hangs
+    3. Otherwise it fails with an explicit instruction - it never hangs
        waiting on a prompt in a non-interactive session.
   Re-ask any time with: ./run.sh choose
-  Skip the menu any time by passing a host and/or --no-nix explicitly —
+  Skip the menu any time by passing a host and/or --no-nix explicitly -
   this is also the only way to drive the (planned) ci host.
 
 COMMANDS
@@ -38,7 +38,7 @@ COMMANDS
                      installs Nix, links this repo to ~/.dotfiles, and
                      applies the config. On the work host (--no-nix)
                      this installs from work/Brewfile and wires up
-                     configs with plain shell — see README.md.
+                     configs with plain shell - see README.md.
   plan [host]        Shows what WOULD change without touching anything.
                      Nix hosts only.
   rebuild [host]     Re-applies the config. Run after editing any
@@ -185,7 +185,7 @@ cmd_plan() {
     return
   fi
   if ! command -v nix >/dev/null 2>&1; then
-    echo "Nix isn't installed yet — run ./run.sh bootstrap first."
+    echo "Nix isn't installed yet - run ./run.sh bootstrap first."
     exit 1
   fi
   echo "==> building '$HOST' config (nothing on this machine will change)"
