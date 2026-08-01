@@ -1,6 +1,6 @@
-# Captain-triaged manifest for the --no-nix work-host path (see work/README.md).
+# Captain-triaged manifest for the --no-nix work-host path (see README.md).
 # Install EXACTLY this, nothing more. Keep in sync with the "excluded by
-# captain decision" list in work/README.md when either changes.
+# captain decision" list in README.md when either changes.
 
 brew "git"
 brew "ripgrep"

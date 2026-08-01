@@ -47,19 +47,8 @@ install_packages() {
   "$brew" bundle --file="$repo/work/Brewfile"
 }
 
-install_symlinks() {
-  local repo="$1"
-  echo "==> linking configs"
-  mkdir -p "$HOME/.config" "$HOME/.claude"
-  ln -sfn "$repo/home/.config/nvim" "$HOME/.config/nvim"
-  ln -sfn "$repo/home/.config/starship.toml" "$HOME/.config/starship.toml"
-  ln -sfn "$repo/home/.config/ghostty" "$HOME/.config/ghostty"
-  ln -sfn "$repo/home/AGENTS.md" "$HOME/AGENTS.md"
-  ln -sfn "$repo/home/AGENTS.md" "$HOME/.claude/CLAUDE.md"
-}
-
 # Replaces $target with a symlink to $source, backing up a pre-existing
-# real file (not one of our own symlinks) exactly once.
+# real file or directory (not one of our own symlinks) exactly once.
 link_with_backup() {
   local source="$1" target="$2"
   if [ -e "$target" ] && [ ! -L "$target" ]; then
@@ -67,6 +56,17 @@ link_with_backup() {
     echo "    backed up existing $target -> $target.pre-dotfiles-backup"
   fi
   ln -sfn "$source" "$target"
+}
+
+install_symlinks() {
+  local repo="$1"
+  echo "==> linking configs"
+  mkdir -p "$HOME/.config" "$HOME/.claude"
+  link_with_backup "$repo/home/.config/nvim" "$HOME/.config/nvim"
+  link_with_backup "$repo/home/.config/starship.toml" "$HOME/.config/starship.toml"
+  link_with_backup "$repo/home/.config/ghostty" "$HOME/.config/ghostty"
+  link_with_backup "$repo/home/AGENTS.md" "$HOME/AGENTS.md"
+  link_with_backup "$repo/home/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 }
 
 install_zshrc() {
@@ -93,11 +93,11 @@ configure_git_identity() {
   if [ -t 0 ]; then
     echo "==> no git identity configured on this machine"
     if [ -z "$name" ]; then
-      read -r -p "    git user.name: " name
+      read -r -p "    git user.name: " name || true
       [ -n "$name" ] && git config --global user.name "$name"
     fi
     if [ -z "$email" ]; then
-      read -r -p "    git user.email: " email
+      read -r -p "    git user.email: " email || true
       [ -n "$email" ] && git config --global user.email "$email"
     fi
   fi

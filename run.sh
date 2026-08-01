@@ -57,7 +57,14 @@ choose_host() {
   echo "  1) home  (personal-mac: full Nix + home-manager setup)"
   echo "  2) work  (brew-only, no Nix)"
   local choice
-  read -r -p "Choose [1/2]: " choice
+  if ! read -r -p "Choose [1/2]: " choice; then
+    echo "" >&2
+    echo "No answer read - this doesn't look like an interactive session." >&2
+    echo "Pick the host explicitly instead:" >&2
+    echo "  ./run.sh bootstrap personal-mac" >&2
+    echo "  ./run.sh bootstrap work --no-nix" >&2
+    exit 1
+  fi
   case "$choice" in
     1) HOST="personal-mac"; RESOLVED_NO_NIX=0 ;;
     2) HOST="work"; RESOLVED_NO_NIX=1 ;;
@@ -166,7 +173,15 @@ cmd_plan() {
   resolve_host "${1:-}" "$no_nix" 1
   if [ "$RESOLVED_NO_NIX" = 1 ]; then
     echo "==> work host has no Nix-style dry-run; showing missing brew packages instead"
-    "$(command -v brew || echo /opt/homebrew/bin/brew)" bundle check --file="$DIR/work/Brewfile" --verbose
+    local brew
+    if command -v brew >/dev/null 2>&1; then
+      brew="$(command -v brew)"
+    elif [ -x /opt/homebrew/bin/brew ]; then
+      brew=/opt/homebrew/bin/brew
+    else
+      brew=/usr/local/bin/brew
+    fi
+    "$brew" bundle check --file="$DIR/work/Brewfile" --verbose
     return
   fi
   if ! command -v nix >/dev/null 2>&1; then

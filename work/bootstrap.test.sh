@@ -217,8 +217,7 @@ test_existing_git_identity_is_preserved_and_not_pending() {
 test_macos_defaults_failure_warns_and_continues() {
   setup
   : >"$FIXTURES/defaults_fail"
-  out=$(run_bootstrap 2>&1)
-  code=$?
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
   assert_eq "bootstrap still exits 0 despite MDM-locked defaults" "0" "$code"
   assert_contains "warns about a rejected default" "$out" "WARN: could not set"
   assert_contains "summary flags macOS defaults as pending" "$out" "macOS defaults"
@@ -236,8 +235,7 @@ test_idempotent_rerun() {
   setup
   run_bootstrap >"$TMP/out.log" 2>&1 || true
   first_target=$(readlink "$HOME/.zshrc")
-  run_bootstrap >"$TMP/out2.log" 2>&1
-  code=$?
+  if run_bootstrap >"$TMP/out2.log" 2>&1; then code=0; else code=$?; fi
   assert_eq "second run exits 0" "0" "$code"
   assert_eq "zshrc still points at the same place, no re-backup" "$first_target" "$(readlink "$HOME/.zshrc")"
   assert_eq "no backup file created on re-run (target was already our symlink)" "0" "$(find "$HOME" -name '*.pre-dotfiles-backup' | wc -l | tr -d ' ')"
