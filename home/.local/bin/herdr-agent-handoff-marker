@@ -1,0 +1,236 @@
+#!/bin/sh
+# Prefixes the tab label of any agent pane herdr currently detects as
+# "handed off" (the fm_handed_off_shell_running rule in
+# ~/.config/herdr/agent-detection/claude.toml) with an hourglass, and
+# strips it again once the agent is back to working directly - or once the
+# pane has stopped being an agent at all, so the prefix can never outlive
+# the state it describes.
+#
+# An explicit scope is always required (--all or --only) - there is no
+# default whole-workspace sweep, so the script cannot repaint tabs it
+# was not deliberately pointed at. Only the launchd job (home.nix) should
+# pass --all; manual runs and tests should use --only <tab-id> and/or
+# --dry-run against a throwaway tab, never the bare command against a
+# live herdr session.
+#
+# No state file - the prefix itself is the only state, so a rename is
+# idempotent and always recoverable by string comparison alone.
+set -eu
+
+PREFIX="⏳ "
+
+usage() {
+  cat <<'EOF'
+usage: herdr-agent-handoff-marker (--all | --only <tab-id>[,<tab-id>...]) [--dry-run]
+
+  --all             Sweep every agent tab herdr currently reports. This is
+                     the real, whole-workspace mode - only the launchd job
+                     should use it.
+  --only <ids>       Only ever consider the given comma-separated tab ids,
+                     even if other agent tabs exist. Use this for manual
+                     runs and tests against a throwaway tab.
+  --dry-run          Print what would be renamed instead of renaming it.
+                     Combine with --only for safe manual testing.
+
+One of --all or --only is required - there is no default scope.
+EOF
+}
+
+mode=""
+only_tabs=""
+dry_run=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all)
+      if [ -n "$mode" ] && [ "$mode" != "all" ]; then
+        echo "herdr-agent-handoff-marker: conflicting scope flags: --all and --only cannot be combined" >&2
+        exit 2
+      fi
+      mode="all"
+      shift
+      ;;
+    --only)
+      if [ -n "$mode" ] && [ "$mode" != "only" ]; then
+        echo "herdr-agent-handoff-marker: conflicting scope flags: --all and --only cannot be combined" >&2
+        exit 2
+      fi
+      if [ $# -lt 2 ]; then
+        echo "herdr-agent-handoff-marker: --only requires at least one tab id" >&2
+        exit 2
+      fi
+      mode="only"
+      only_tabs=$2
+      shift 2
+      ;;
+    --only=*)
+      if [ -n "$mode" ] && [ "$mode" != "only" ]; then
+        echo "herdr-agent-handoff-marker: conflicting scope flags: --all and --only cannot be combined" >&2
+        exit 2
+      fi
+      mode="only"
+      only_tabs=${1#--only=}
+      shift
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "herdr-agent-handoff-marker: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$mode" ]; then
+  echo "herdr-agent-handoff-marker: refusing to run without an explicit scope (--all or --only)" >&2
+  usage >&2
+  exit 2
+fi
+
+only_set=""
+if [ "$mode" = "only" ]; then
+  if [ -z "$only_tabs" ]; then
+    echo "herdr-agent-handoff-marker: --only requires at least one tab id" >&2
+    exit 2
+  fi
+  only_set=$(printf '%s' "$only_tabs" | tr ',' '\n')
+fi
+
+command -v herdr >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+
+agents_json=$(herdr agent list 2>/dev/null) || exit 0
+[ -n "$agents_json" ] || exit 0
+
+pairs=$(printf '%s' "$agents_json" | jq -r '.result.agents[]? | "\(.pane_id) \(.tab_id)"' 2>/dev/null) || exit 0
+
+agent_tabs=""
+handoff_tabs=""
+unknown_tabs=""
+
+old_ifs=$IFS
+IFS='
+'
+for pair in $pairs; do
+  IFS=' '
+  # Deliberate word split of "<pane_id> <tab_id>" on the space above.
+  # shellcheck disable=SC2086
+  set -- $pair
+  pane_id=$1
+  tab_id=$2
+  IFS=$old_ifs
+
+  # --only structurally excludes every other tab right here, before this
+  # pane's content is even read: with --only, an out-of-scope pane is
+  # never explained and never appears in agent_tabs, so the render loop
+  # below has no way to touch it.
+  if [ "$mode" = "only" ] && ! printf '%s\n' "$only_set" | grep -qxF "$tab_id"; then
+    continue
+  fi
+
+  # A failed explain call records this tab as unknown, which blocks the strip
+  # branch below for that tab this tick - failing quiet per-pane rather than
+  # defaulting it to "not handed off" and stripping a prefix that may still
+  # be accurate.
+  explain_json=$(herdr agent explain "$pane_id" --json 2>/dev/null) || {
+    unknown_tabs="$unknown_tabs$tab_id
+"
+    continue
+  }
+
+  # Trust herdr's own priority resolution completely: matched_rule is
+  # whichever matched rule currently has the highest priority, so this can
+  # only ever be fm_handed_off_shell_running when nothing that represents
+  # genuine active work (osc_title_working, priority 1100) is also
+  # matching. Do not weaken this to "does the handoff rule match anywhere
+  # in evaluated_rules" - leftover "N shell(s) still running" text can
+  # still sit inside the trailing-lines snapshot window well after the
+  # agent has resumed generating, and that check has no way to tell the
+  # two apart from a single explain call. (This does leave one known,
+  # accepted edge: if a skip_state_update overlay rule such as
+  # transcript_viewer outranks the handoff rule, the hourglass is briefly
+  # not shown even though the agent is still genuinely handed off
+  # underneath the overlay. Low severity, self-corrects once the overlay
+  # closes, and not worth the false-positive risk of trying to see under it.)
+  rule_id=$(printf '%s' "$explain_json" | jq -r '.matched_rule.id // empty' 2>/dev/null) || {
+    unknown_tabs="$unknown_tabs$tab_id
+"
+    continue
+  }
+  if [ "$rule_id" = "fm_handed_off_shell_running" ]; then
+    is_handoff=true
+  else
+    is_handoff=false
+  fi
+
+  agent_tabs="$agent_tabs$tab_id
+"
+  if [ "$is_handoff" = "true" ]; then
+    handoff_tabs="$handoff_tabs$tab_id
+"
+  fi
+done
+IFS=$old_ifs
+
+# Read the labels only now, after the explain loop: everything above can take
+# a while, and a label read before it would be a stale snapshot that clobbers
+# a rename the owner made in the meantime.
+tabs_json=$(herdr tab list 2>/dev/null) || exit 0
+[ -n "$tabs_json" ] || exit 0
+
+# Second source for the render set: tabs that already carry the prefix. A tab
+# whose pane has stopped being reported as an agent at all never shows up in
+# agent_tabs, so without this its hourglass would stick forever.
+prefixed_tabs=$(printf '%s' "$tabs_json" | jq -r --arg p "$PREFIX" '.result.tabs[]? | select((.label // "") | startswith($p)) | .tab_id' 2>/dev/null) || prefixed_tabs=""
+
+printf '%s\n%s\n' "$agent_tabs" "$prefixed_tabs" | sort -u | while IFS= read -r tab_id; do
+  [ -n "$tab_id" ] || continue
+
+  # Re-checked here rather than only at the agent-list filter above, so every
+  # source feeding the render set - including prefixed_tabs - is held to the
+  # same scope.
+  if [ "$mode" = "only" ] && ! printf '%s\n' "$only_set" | grep -qxF "$tab_id"; then
+    continue
+  fi
+
+  label=$(printf '%s' "$tabs_json" | jq -r --arg id "$tab_id" '.result.tabs[]? | select(.tab_id == $id) | .label // empty' 2>/dev/null) || continue
+  [ -n "$label" ] || continue
+
+  is_handed_off=0
+  if printf '%s\n' "$handoff_tabs" | grep -qxF "$tab_id"; then
+    is_handed_off=1
+  fi
+
+  is_unknown=0
+  if printf '%s\n' "$unknown_tabs" | grep -qxF "$tab_id"; then
+    is_unknown=1
+  fi
+
+  case "$label" in
+    "$PREFIX"*) has_prefix=1 ;;
+    *) has_prefix=0 ;;
+  esac
+
+  if [ "$is_handed_off" = 1 ] && [ "$has_prefix" = 0 ]; then
+    new_label="${PREFIX}${label}"
+    if [ "$dry_run" = 1 ]; then
+      printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$new_label"
+    else
+      herdr tab rename "$tab_id" "$new_label" >/dev/null 2>&1 || true
+    fi
+  elif [ "$is_handed_off" = 0 ] && [ "$has_prefix" = 1 ] && [ "$is_unknown" = 0 ]; then
+    stripped=${label#"$PREFIX"}
+    if [ "$dry_run" = 1 ]; then
+      printf 'dry-run: would rename %s: %s -> %s\n' "$tab_id" "$label" "$stripped"
+    else
+      herdr tab rename "$tab_id" "$stripped" >/dev/null 2>&1 || true
+    fi
+  fi
+done

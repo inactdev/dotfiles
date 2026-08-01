@@ -1,0 +1,2 @@
+Sonnet 5 | ctx 6% | in 62.1k / out 3 | $0.54 | quota 5h 14% · 7d 10%
+⏵⏵ bypass permissions on · 1 shell · ← for agents

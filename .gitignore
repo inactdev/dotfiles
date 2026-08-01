@@ -2,3 +2,16 @@ neovim
 fzf
 SFMono-Nerd-Font-Ligaturized
 *log
+
+# herdr runtime artifacts (regenerated at runtime; never commit)
+home/.config/herdr/*.log
+home/.config/herdr/session.json
+home/.config/herdr/*.sock
+
+# macOS + nix build noise
+.DS_Store
+result
+result-*
+
+# no-mistakes local validation state - never commit in this public repo
+.no-mistakes/

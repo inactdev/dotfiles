@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/inactdev/.claude/hooks/herdr-agent-state.sh' session",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gh-axi",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "chrome-devtools-axi",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "lavish-axi",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "input=$(cat); IFS=$'\\t' read -r model effort ctx sent recv cost q5 q7 <<<\"$(echo \"$input\" | jq -r '[.model.display_name, (.effort.level // .effort_level // .model.effort // \"-\"), (.context_window.used_percentage//0|floor|tostring), (.context_window.total_input_tokens//0|tostring), (.context_window.total_output_tokens//0|tostring), (.cost.total_cost_usd//0|tostring), (.rate_limits.five_hour.used_percentage//0|floor|tostring), (.rate_limits.seven_day.used_percentage//0|floor|tostring)] | @tsv')\"; [ \"$effort\" = \"-\" ] && effort=$(jq -r '.effortLevel // \"\"' ~/.claude/settings.json 2>/dev/null); [ \"$effort\" = \"-\" ] && effort=\"\"; hum(){ awk -v n=\"$1\" 'BEGIN{if(n>=1000000)printf\"%.1fM\",n/1000000;else if(n>=1000)printf\"%.1fk\",n/1000;else printf\"%d\",n}'; }; acct=$(jq -r '.oauthAccount // {} | ((.organizationRateLimitTier // \"\") | sub(\"^default_claude_\";\"\")) as $t | (if $t==\"max_20x\" then \"Max 20x\" elif $t==\"max_5x\" then \"Max 5x\" elif $t==\"pro\" then \"Pro\" elif $t==\"\" then \"api\" else $t end) + \"\\t\" + (.emailAddress // \"?\")' ~/.claude.json 2>/dev/null); plan=${acct%%$'\\t'*}; mail=${acct#*$'\\t'}; [ -n \"${ANTHROPIC_API_KEY:-}\" ] && plan=\"api key\"; [ -n \"$plan\" ] || plan=\"?\"; printf '$%.2f | %s | %s\\n%s%s | ctx %s%% | 5h %s%% \u00b7 7d %s%% | %s in / %s out' \"$cost\" \"$plan\" \"$mail\" \"$model\" \"${effort:+ - $effort}\" \"$ctx\" \"$q5\" \"$q7\" \"$(hum \"$sent\")\" \"$(hum \"$recv\")\""
+  },
+  "effortLevel": "xhigh",
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "dark-ansi"
+}
