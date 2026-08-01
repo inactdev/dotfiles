@@ -15,3 +15,6 @@ result-*
 
 # no-mistakes local validation state - never commit in this public repo
 .no-mistakes/
+
+# run.sh's remembered per-machine home/work choice - local to each clone
+/.dotfiles-host

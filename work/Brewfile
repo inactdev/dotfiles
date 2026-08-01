@@ -1,0 +1,25 @@
+# Captain-triaged manifest for the --no-nix work-host path (see work/README.md).
+# Install EXACTLY this, nothing more. Keep in sync with the "excluded by
+# captain decision" list in work/README.md when either changes.
+
+brew "git"
+brew "ripgrep"
+brew "fd"
+brew "stylua"
+brew "prettierd"
+brew "ruff"
+brew "neovim"
+brew "node"
+brew "go"
+brew "python@3.13"
+brew "rbenv"
+brew "jq"
+brew "gh"
+brew "direnv"
+brew "starship"
+brew "zsh-autosuggestions"
+brew "zsh-syntax-highlighting"
+
+cask "ghostty"
+cask "claude-code"
+cask "font-inconsolata-nerd-font"
