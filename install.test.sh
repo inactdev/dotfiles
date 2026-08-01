@@ -186,6 +186,38 @@ test_personal_posture_alias_not_duplicated_on_rerun() {
   teardown
 }
 
+test_posture_flip_to_work_removes_skip_permissions_alias() {
+  setup
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    HOME="$HOME" configure_posture_shell "personal"
+    HOME="$HOME" configure_posture_shell "work"
+  )
+  if grep -qF 'alias cc="claude --dangerously-skip-permissions"' "$HOME/.zshrc.local" 2>/dev/null; then
+    fail_count=$((fail_count + 1))
+    echo "FAIL - alias must not survive a personal -> work posture flip"
+  else
+    pass_count=$((pass_count + 1))
+    echo "ok - alias removed on personal -> work posture flip"
+  fi
+  teardown
+}
+
+test_posture_flip_to_work_preserves_other_zshrc_local_lines() {
+  setup
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    HOME="$HOME" configure_posture_shell "personal"
+    echo 'export SOME_OTHER_VAR=1' >>"$HOME/.zshrc.local"
+    HOME="$HOME" configure_posture_shell "work"
+  )
+  assert_contains "unrelated .zshrc.local lines survive the flip" \
+    "$(cat "$HOME/.zshrc.local")" 'export SOME_OTHER_VAR=1'
+  teardown
+}
+
 test_work_posture_does_not_touch_zshrc_local() {
   setup
   (
@@ -259,6 +291,8 @@ test_personal_posture_links_codespaces_settings
 test_work_posture_links_work_settings
 test_personal_posture_adds_skip_permissions_alias
 test_personal_posture_alias_not_duplicated_on_rerun
+test_posture_flip_to_work_removes_skip_permissions_alias
+test_posture_flip_to_work_preserves_other_zshrc_local_lines
 test_work_posture_does_not_touch_zshrc_local
 test_require_codespaces_fails_outside_a_codespace
 test_codespaces_claude_settings_no_hooks_keeps_skip_permissions

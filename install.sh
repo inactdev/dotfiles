@@ -186,10 +186,17 @@ install_claude_settings() {
 # is the safe, locked-down default work posture keeps as-is.
 configure_posture_shell() {
   local posture="$1"
+  local line='alias cc="claude --dangerously-skip-permissions"'
   if [ "$posture" = "personal" ]; then
-    local line='alias cc="claude --dangerously-skip-permissions"'
     touch "$HOME/.zshrc.local"
     grep -qxF "$line" "$HOME/.zshrc.local" || echo "$line" >>"$HOME/.zshrc.local"
+  elif [ -f "$HOME/.zshrc.local" ]; then
+    # A given codespace's workspace repo never actually changes, so this is
+    # belt-and-suspenders rather than an expected real-world path - but a
+    # rerun must never leave the personal skip-permissions alias behind
+    # once posture has resolved to work.
+    grep -vxF "$line" "$HOME/.zshrc.local" >"$HOME/.zshrc.local.tmp" || true
+    mv "$HOME/.zshrc.local.tmp" "$HOME/.zshrc.local"
   fi
 }
 
