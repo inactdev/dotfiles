@@ -77,6 +77,25 @@ run_choose_host() {
   )
 }
 
+# Runs resolve_host in a subshell against a scratch marker and reports both
+# the resolved values and resolve_host's own exit status. The status matters
+# on its own: run.sh is `set -e`, and cmd_bootstrap/plan/rebuild call
+# resolve_host as a plain command, so a non-zero return there kills the whole
+# CLI silently. Capturing it here (rather than letting the caller's `|| true`
+# swallow it) is what makes that regression visible.
+run_resolve_host() {
+  local requested=$1
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
+    MARKER="$TMP/.dotfiles-host"
+    rc=0
+    resolve_host "$requested" "0" "0" || rc=$?
+    echo "HOST=$HOST RESOLVED_NO_NIX=$RESOLVED_NO_NIX rc=$rc"
+  )
+}
+
 test_home_menu_answer_picks_personal_mac_on_darwin() {
   setup
   out=$(run_choose_host "Darwin" "1" 2>&1) || true
@@ -121,29 +140,39 @@ test_work_menu_answer_fails_clearly_on_linux() {
 test_explicit_work_host_on_linux_is_rejected_by_bootstrap_no_nix() {
   setup
   mock_uname "$MOCK_DIR" "Linux"
-  out=$(
+  if out=$(
     # shellcheck disable=SC1090
     source "$SCRIPT"
     # shellcheck disable=SC2030,SC2031
     PATH="$MOCK_DIR:$PATH"
     cmd_bootstrap_no_nix "work" 2>&1
-  ) || code=$?
-  assert_eq "explicit work + Linux exits non-zero" "1" "${code:-0}"
+  ); then code=0; else code=$?; fi
+  assert_eq "explicit work + Linux exits non-zero" "1" "$code"
   assert_contains "explains no work-linux host (explicit path)" "$out" "No work-linux host is defined"
   teardown
 }
 
 test_explicit_home_linux_host_still_resolves_to_home_linux() {
   setup
-  out=$(
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
-    MARKER="$TMP/.dotfiles-host"
-    resolve_host "home-linux" "0" "0"
-    echo "HOST=$HOST RESOLVED_NO_NIX=$RESOLVED_NO_NIX"
-  ) || true
+  out=$(run_resolve_host "home-linux" 2>&1) || true
   assert_contains "explicit home-linux resolves cleanly" "$out" "HOST=home-linux RESOLVED_NO_NIX=0"
+  assert_contains "explicit home-linux resolve_host succeeds" "$out" "rc=0"
+  teardown
+}
+
+test_explicit_personal_mac_host_still_resolves_to_personal_mac() {
+  setup
+  out=$(run_resolve_host "personal-mac" 2>&1) || true
+  assert_contains "explicit personal-mac resolves cleanly" "$out" "HOST=personal-mac RESOLVED_NO_NIX=0"
+  assert_contains "explicit personal-mac resolve_host succeeds" "$out" "rc=0"
+  teardown
+}
+
+test_explicit_work_host_implies_no_nix() {
+  setup
+  out=$(run_resolve_host "work" 2>&1) || true
+  assert_contains "explicit work implies --no-nix" "$out" "HOST=work RESOLVED_NO_NIX=1"
+  assert_contains "explicit work resolve_host succeeds" "$out" "rc=0"
   teardown
 }
 
@@ -167,6 +196,8 @@ test_work_menu_answer_picks_work_on_darwin
 test_work_menu_answer_fails_clearly_on_linux
 test_explicit_work_host_on_linux_is_rejected_by_bootstrap_no_nix
 test_explicit_home_linux_host_still_resolves_to_home_linux
+test_explicit_personal_mac_host_still_resolves_to_personal_mac
+test_explicit_work_host_implies_no_nix
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

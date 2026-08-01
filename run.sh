@@ -114,14 +114,14 @@ resolve_host() {
     RESOLVED_NO_NIX="$explicit_no_nix"
     # "work" only exists as a --no-nix host today; treat it as such even
     # if --no-nix wasn't repeated on the command line.
-    [ "$HOST" = "work" ] && RESOLVED_NO_NIX=1
-    return
+    if [ "$HOST" = "work" ]; then RESOLVED_NO_NIX=1; fi
+    return 0
   fi
 
   if [ "$explicit_no_nix" = 1 ]; then
     HOST="work"
     RESOLVED_NO_NIX=1
-    return
+    return 0
   fi
 
   if [ -f "$MARKER" ]; then
@@ -131,12 +131,12 @@ resolve_host() {
     else
       RESOLVED_NO_NIX=0
     fi
-    return
+    return 0
   fi
 
   if [ "$allow_menu" = 1 ] && [ -t 0 ]; then
     choose_host
-    return
+    return 0
   fi
 
   echo "No host given, nothing remembered for this machine, and this isn't" >&2

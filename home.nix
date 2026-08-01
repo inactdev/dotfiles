@@ -181,6 +181,8 @@ lib.mkMerge [
 
     home.activation.installNerdFont = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       $DRY_RUN_CMD mkdir -p "$HOME/.local/share/fonts"
+      $DRY_RUN_CMD find "$HOME/.local/share/fonts" -maxdepth 1 \
+        -xtype l -lname '/nix/store/*' -delete
       $DRY_RUN_CMD find "${pkgs.nerd-fonts.inconsolata}" -name '*.ttf' \
         -exec ln -sf {} "$HOME/.local/share/fonts/" \;
       $DRY_RUN_CMD ${pkgs.fontconfig}/bin/fc-cache -f "$HOME/.local/share/fonts"

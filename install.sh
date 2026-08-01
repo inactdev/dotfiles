@@ -86,7 +86,8 @@ install_node() {
     return
   fi
   echo "==> node 22.x (NodeSource - apt's nodejs is 18.x, too old for the npm tools below)"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null
+  curl -fsSL https://deb.nodesource.com/setup_22.x \
+    | sudo -E DEBIAN_FRONTEND=noninteractive bash - >/dev/null
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
 }
 
