@@ -32,9 +32,8 @@
   };
   homebrew = {
     enable = true;
-    # "none" = adoption mode: never uninstall things not listed here.
-    # Once your list is complete, flip to "zap" for true no-drift.
-    onActivation.cleanup = "none";
+    # "zap" = true no-drift: removes any brew/cask/tap not listed here.
+    onActivation.cleanup = "zap";
     taps = [
       "my-monkeys/tap"
     ];
@@ -45,6 +44,15 @@
       }
       "herdr"
       "rbenv"
+      # kept for app HTTPS work; may move to per-app provisioning when
+      # Inkwell's transport decision lands
+      "mkcert"
+      # mkcert's Firefox trust-store companion
+      "nss"
+      # this repo's own test suites lint with it
+      "shellcheck"
+      # Inkwell project generation
+      "xcodegen"
     ];
     casks = [
       "ghostty"

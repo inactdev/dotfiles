@@ -22,7 +22,6 @@ lib.mkMerge [
       [
         # editors & terminal
         neovim
-        tmux
         starship
         # search / files
         ripgrep
@@ -86,8 +85,6 @@ lib.mkMerge [
       shellAliases = {
         bx = "bundle exec";
         vim = "nvim";
-        tww = "tmux new -s work-windows";
-        tdd = "tmux new -s daemons";
         cssh = "infocmp -x xterm-ghostty | ssh gh codespace ssh tic -x -h";
         cc = "claude --dangerously-skip-permissions";
       };
@@ -113,7 +110,6 @@ lib.mkMerge [
     # Editing ~/.config/nvim IS editing the repo. Commit to port changes.
     home.file.".config/nvim".source =
       config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/nvim";
-    home.file.".tmux.conf".source = config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.tmux.conf";
     home.file.".config/starship.toml".source =
       config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/starship.toml";
     home.file.".config/ghostty".source =
