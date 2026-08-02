@@ -7,9 +7,17 @@
 #
 # Fully non-interactive by construction: requires CODESPACES=true and never
 # prompts. For a real machine (Mac or the captain's home Ubuntu box) use
-# ./run.sh instead - see README.md. There is no work-linux host: a
-# corporate/work codespace is detected automatically below and gets the
-# locked-down posture instead.
+# ./run.sh instead - see README.md.
+#
+# A thin launcher, not a second package manifest: it installs Nix, then
+# applies one of two home-manager profiles (flake.nix's
+# homeConfigurations."codespace-personal"/"codespace-work", both built from
+# modules/core.nix + modules/codespace.nix) that carry the actual package
+# list - the same one personal-mac and home-linux use. Posture only picks
+# which of the two small deltas modules/codespace.nix still varies by hand
+# (the Claude settings file, and the `cc` alias) - see README.md and
+# AGENTS.md. Work Mac's separate --no-nix path (work/bootstrap.sh) is a
+# different host entirely and untouched by this.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -55,162 +63,64 @@ detect_posture() {
   fi
 }
 
-# Replaces $target with a symlink to $source, backing up a pre-existing
-# real file or directory (not one of our own symlinks) exactly once. Same
-# helper as work/bootstrap.sh's link_with_backup.
-link_with_backup() {
-  local source="$1" target="$2"
-  if [ -e "$target" ] && [ ! -L "$target" ]; then
-    mv "$target" "$target.pre-dotfiles-backup"
-    echo "    backed up existing $target -> $target.pre-dotfiles-backup"
-  fi
-  ln -sfn "$source" "$target"
-}
-
-install_apt_packages() {
-  echo "==> apt: base packages"
-  sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip git zsh \
-    ripgrep fd-find jq \
-    zsh-autosuggestions zsh-syntax-highlighting direnv
-}
-
-# Ubuntu 24.04's apt nodejs is 18.x, too old for @anthropic-ai/claude-code
-# and @fsouza/prettierd (both require Node >=22) - NodeSource's official
-# setup script swaps in a current LTS instead.
-install_node() {
-  if command -v npm >/dev/null 2>&1 && \
-    [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 22 ]; then
-    echo "==> node $(node -v) already installed, skipping"
+# Determinate Nix's own installer script, --init none: a codespace is
+# already a running container with no devcontainer.json control over it
+# (unlike a fresh container build, there's no hook to add a systemd unit),
+# so this is the "no init system to hand the daemon to" container-safe
+# mode - see https://github.com/DeterminateSystems/nix-installer, and
+# install.container-test.sh, which exercises this for real.
+install_nix() {
+  if command -v nix >/dev/null 2>&1; then
+    echo "==> Nix already installed, skipping"
     return
   fi
-  echo "==> node 22.x (NodeSource - apt's nodejs is 18.x, too old for the npm tools below)"
-  curl -fsSL https://deb.nodesource.com/setup_22.x \
-    | sudo -E DEBIAN_FRONTEND=noninteractive bash - >/dev/null
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
+  echo "==> installing Nix (Determinate installer, container-safe mode)"
+  curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix |
+    sh -s -- install linux --init none --no-confirm
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 }
 
-link_fd() {
-  mkdir -p "$HOME/.local/bin"
-  if command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; then
-    ln -sf "$(command -v fdfind)" "$HOME/.local/bin/fd"
+# --init none means nothing starts/supervises nix-daemon for us; without it
+# running, every Nix command from a non-root user fails to reach the store.
+start_nix_daemon() {
+  if [ -S /nix/var/nix/daemon-socket/socket ]; then
+    echo "==> nix-daemon already running"
+    return
   fi
+  echo "==> starting nix-daemon (--init none leaves no service manager to do it)"
+  sudo -b /nix/var/nix/profiles/default/bin/nix-daemon >/tmp/nix-daemon.log 2>&1
+  local i
+  for i in $(seq 1 30); do
+    if [ -S /nix/var/nix/daemon-socket/socket ]; then
+      echo "==> nix-daemon up"
+      return
+    fi
+    sleep 1
+  done
+  echo "nix-daemon did not start within 30s - see /tmp/nix-daemon.log" >&2
+  exit 1
 }
 
-# Ubuntu 24.04's apt neovim is 0.9.5; this config's lazy.nvim bootstrap
-# calls vim.uv directly (see home/.config/nvim/lua/lazy_init.lua), which
-# needs 0.10+. Installed from the official prebuilt tarball instead.
-install_neovim() {
-  local version="v0.11.7"
-  local install_dir="$HOME/.local/opt/nvim-$version"
-  if [ -x "$install_dir/bin/nvim" ]; then
-    echo "==> neovim $version already installed, skipping"
-  else
-    echo "==> neovim $version (official tarball, not apt)"
-    local tmp
-    tmp="$(mktemp -d)"
-    curl -fsSL -o "$tmp/nvim.tar.gz" \
-      "https://github.com/neovim/neovim/releases/download/$version/nvim-linux-x86_64.tar.gz"
-    mkdir -p "$install_dir"
-    tar -xzf "$tmp/nvim.tar.gz" -C "$install_dir" --strip-components=1
-    rm -rf "$tmp"
-  fi
-  mkdir -p "$HOME/.local/bin"
-  ln -sfn "$install_dir/bin/nvim" "$HOME/.local/bin/nvim"
-}
-
-configure_npm_prefix() {
-  mkdir -p "$HOME/.local"
-  npm config set prefix "$HOME/.local" >/dev/null
-}
-
-install_formatters() {
-  echo "==> formatters: ruff, stylua, prettierd"
-  curl -LsSf https://astral.sh/ruff/install.sh | sh >/dev/null
-
-  local stylua_version="2.5.2" tmp
-  tmp="$(mktemp -d)"
-  curl -fsSL -o "$tmp/stylua.zip" \
-    "https://github.com/JohnnyMorganz/StyLua/releases/download/v$stylua_version/stylua-linux-x86_64.zip"
-  mkdir -p "$HOME/.local/bin"
-  (cd "$tmp" && unzip -oq stylua.zip && install -m755 stylua "$HOME/.local/bin/stylua")
-  rm -rf "$tmp"
-
-  npm install -g @fsouza/prettierd >/dev/null
-}
-
-install_starship() {
-  echo "==> starship"
-  mkdir -p "$HOME/.local/bin"
-  curl -sS https://starship.rs/install.sh | sh -s -- --yes --bin-dir "$HOME/.local/bin" >/dev/null
-}
-
-install_claude_code() {
-  echo "==> Claude Code CLI"
-  npm install -g @anthropic-ai/claude-code >/dev/null
-}
-
-# Baseline config symlinks + zshrc. Ghostty/wezterm/herdr are all
-# client-side terminal concerns (the terminal app runs on the developer's
-# machine, not inside the codespace container) so none of them belong
-# here - same reasoning as the "no font install" rule below.
-install_symlinks() {
-  echo "==> linking configs"
-  mkdir -p "$HOME/.config" "$HOME/.claude"
-  link_with_backup "$SCRIPT_DIR/home/.config/nvim" "$HOME/.config/nvim"
-  link_with_backup "$SCRIPT_DIR/home/.config/starship.toml" "$HOME/.config/starship.toml"
-  link_with_backup "$SCRIPT_DIR/home/AGENTS.md" "$HOME/AGENTS.md"
-  link_with_backup "$SCRIPT_DIR/home/AGENTS.md" "$HOME/.claude/CLAUDE.md"
-  link_with_backup "$SCRIPT_DIR/codespaces/zshrc" "$HOME/.zshrc"
-}
-
-# codespaces/claude-settings.json and work/claude-settings.json are both
-# home/.claude/settings.json with the axi-tool hooks stripped (those tools
-# are explicitly not installed in codespaces, personal or work); the work
-# variant additionally drops skipDangerousModePermissionPrompt, since work
-# posture's `cc` alias never uses --dangerously-skip-permissions, and pins
-# the standing opus/xhigh work override (see README.md), which work-posture
-# codespaces inherit.
-install_claude_settings() {
-  local posture="$1" source
-  if [ "$posture" = "personal" ]; then
-    source="$SCRIPT_DIR/codespaces/claude-settings.json"
-  else
-    source="$SCRIPT_DIR/work/claude-settings.json"
-  fi
-  mkdir -p "$HOME/.claude"
-  link_with_backup "$source" "$HOME/.claude/settings.json"
-}
-
-# Personal posture gets the same --dangerously-skip-permissions `cc` alias
-# as personal-mac/home-linux, layered on via .zshrc.local (never committed)
-# rather than a second zshrc variant - codespaces/zshrc's plain `cc=claude`
-# is the safe, locked-down default work posture keeps as-is.
-configure_posture_shell() {
-  local posture="$1"
-  local line='alias cc="claude --dangerously-skip-permissions"'
-  if [ "$posture" = "personal" ]; then
-    touch "$HOME/.zshrc.local"
-    grep -qxF "$line" "$HOME/.zshrc.local" || echo "$line" >>"$HOME/.zshrc.local"
-  elif [ -f "$HOME/.zshrc.local" ]; then
-    # A given codespace's workspace repo never actually changes, so this is
-    # belt-and-suspenders rather than an expected real-world path - but a
-    # rerun must never leave the personal skip-permissions alias behind
-    # once posture has resolved to work.
-    grep -vxF "$line" "$HOME/.zshrc.local" >"$HOME/.zshrc.local.tmp" || true
-    mv "$HOME/.zshrc.local.tmp" "$HOME/.zshrc.local"
-  fi
-}
-
-# Identity is deliberately left alone: GitHub Codespaces already sets
-# GIT_COMMITTER_NAME/EMAIL (and the GIT_AUTHOR_* equivalents git also
-# honors) and configures git auth itself - setting user.name/user.email
-# here would fight that, not help it.
-configure_git() {
-  echo "==> git behavior config (identity left to Codespaces)"
-  git config --global push.autoSetupRemote true
-  git config --global core.editor nvim
+# The out-of-store symlinks in modules/core.nix (nvim config, AGENTS.md, ...)
+# resolve through ~/.dotfiles, exactly like run.sh's Nix path sets up on
+# personal-mac/home-linux - so editing ~/.dotfiles/home/... in a running
+# codespace IS editing this clone, same as everywhere else.
+apply_home_manager_profile() {
+  local posture="$1" nix_bin
+  echo "==> linking repo to ~/.dotfiles"
+  ln -sfn "$SCRIPT_DIR" "$HOME/.dotfiles"
+  nix_bin="$(command -v nix)"
+  echo "==> applying the codespace-$posture home-manager profile"
+  # --impure: flake.nix reads USER from the environment for this profile
+  # rather than hardcoding the captain's own username (see flake.nix) -
+  # export it explicitly since not every codespace base image is
+  # guaranteed to have it set.
+  USER="$(whoami)" "$nix_bin" run github:nix-community/home-manager/release-26.05#home-manager -- \
+    switch --flake "$HOME/.dotfiles#codespace-$posture" --impure -b hm-backup
+  # shellcheck disable=SC1091
+  [ -f "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" ] &&
+    . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
 }
 
 set_zsh_as_default_shell() {
@@ -223,7 +133,7 @@ set_zsh_as_default_shell() {
 
 sync_neovim_plugins() {
   echo "==> headless nvim plugin sync (Lazy)"
-  "$HOME/.local/bin/nvim" --headless "+Lazy! sync" +qa
+  "$(command -v nvim)" --headless "+Lazy! sync" +qa
 }
 
 main() {
@@ -232,18 +142,9 @@ main() {
   posture="$(detect_posture)"
   echo "==> posture: $posture"
 
-  install_apt_packages
-  install_node
-  link_fd
-  install_neovim
-  configure_npm_prefix
-  install_formatters
-  install_starship
-  install_claude_code
-  install_symlinks
-  install_claude_settings "$posture"
-  configure_posture_shell "$posture"
-  configure_git
+  install_nix
+  start_nix_daemon
+  apply_home_manager_profile "$posture"
   set_zsh_as_default_shell
   sync_neovim_plugins
 
