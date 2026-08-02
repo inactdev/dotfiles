@@ -18,11 +18,28 @@ works: `./run.sh help`.
 
 ## Home hosts (Nix)
 
-`personal-mac` and `home-linux` get the full setup via Nix + home-manager:
-`flake.nix` defines both (`darwinConfigurations.personal-mac`,
-`homeConfigurations.home-linux`), `home.nix` is the single shared module
-for packages/dotfile symlinks/launchd agents (Darwin-only and Linux-only
-pieces are gated in it, not split into separate files), and
+`personal-mac`, `home-linux`, and both Codespaces postures (below) get the
+full setup via Nix + home-manager, composed from `modules/`:
+
+- `modules/core.nix` - cross-host CLI tooling (nvim, ripgrep, fd, fzf, jq,
+  node, formatters, git behavior, zsh + aliases, starship, direnv) and the
+  AGENTS.md/nvim-config symlinks. Every host imports this.
+- `modules/desktop.nix` - ghostty, fonts, git *identity*, and the
+  local-machine Claude settings variant (`home/.claude/settings.json`,
+  axi-tool hooks included) - anything that needs a screen, a local
+  terminal app, or is specific to a machine the captain owns outright.
+  `personal-mac` and `home-linux` import this; Codespaces does not, so all
+  of it is structurally absent there.
+- `modules/mac.nix` - herdr config and the handoff-marker launchd agent.
+  `personal-mac` only.
+- `modules/codespace.nix` - the Codespaces-only delta (Claude Code itself,
+  since there's no Homebrew cask to lean on; which Claude settings file;
+  the `cc` alias) - see the Codespaces section below.
+
+`flake.nix` defines `darwinConfigurations.personal-mac` and
+`homeConfigurations.home-linux`/`.codespace-personal`/`.codespace-work` by
+composing these module files per host (`personal-mac` = core+desktop+mac,
+`home-linux` = core+desktop, each codespace posture = core+codespace).
 `configuration.nix` adds Darwin-only system settings and Homebrew (for the
 handful of casks/formulas Nix doesn't cover well on macOS, e.g. GUI apps).
 
@@ -76,15 +93,32 @@ The bootstrap ends with a short summary of anything it couldn't finish
 
 Codespaces never goes through `run.sh`: GitHub auto-clones this repo and
 runs `install.sh` at container creation, fully non-interactively (it
-requires `CODESPACES=true`). It picks a personal or work posture
-structurally, by comparing the codespace's workspace repo owner
-(`$GITHUB_REPOSITORY`) against this repo's own `git remote get-url origin`
-owner - same owner is personal, anything else (including undeterminable)
-gets the locked-down work default. `codespaces/claude-settings.json` is
-`home/.claude/settings.json` with just the axi-tool hooks stripped (those
-tools aren't installed in a codespace either way); it does not carry the
-work host's opus/xhigh override. Details live in the comments in
-`install.sh` and the codespaces entry in `AGENTS.md`.
+requires `CODESPACES=true`). `install.sh` is a thin launcher, not a second
+package manifest: it installs Nix (the Determinate installer's
+container-safe `--init none` mode, since a running codespace container has
+no init system to hand the daemon to - see the comments in `install.sh`),
+starts `nix-daemon` itself, then applies `flake.nix`'s
+`homeConfigurations."codespace-personal"` or `."codespace-work"` - the same
+`modules/core.nix` package set as `personal-mac`/`home-linux`, plus
+`modules/codespace.nix`. Ghostty, fonts, git identity, herdr, and the
+local-machine Claude settings are all structurally absent, simply because
+Codespaces never imports `modules/desktop.nix`/`modules/mac.nix`.
+
+Posture (personal vs. work) is picked structurally, by comparing the
+codespace's workspace repo owner (`$GITHUB_REPOSITORY`) against this repo's
+own `git remote get-url origin` owner - same owner is personal, anything
+else (including undeterminable) gets the locked-down work default. Once
+posture is known, `modules/codespace.nix` is the only place it still
+matters by hand:
+
+- Which Claude settings file `~/.claude/settings.json` links to -
+  `codespaces/claude-settings.json` for personal (`home/.claude/settings.json`
+  with just the axi-tool hooks stripped, since those tools aren't installed
+  in a codespace either way - it does not carry the work host's opus/xhigh
+  override) or `work/claude-settings.json` (the same file the work Mac
+  uses) for work.
+- The `cc` alias - `claude --dangerously-skip-permissions` for personal,
+  matching `personal-mac`/`home-linux`; plain `claude` for work.
 
 To use this on a new GitHub project: point that project's Codespaces
 settings at this dotfiles repo as its dotfiles repository (GitHub Settings
@@ -96,6 +130,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash run.test.sh` - host selection logic in `run.sh`, against a mocked `uname`.
 - `sh work/bootstrap.test.sh` - the work host's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
 - `bash install.test.sh` - the Codespaces posture-detection logic, hermetic (no apt/npm/network).
+- `bash install.container-test.sh` - the real Codespaces install (Nix, then both `codespace-personal`/`codespace-work` home-manager profiles) inside a disposable `ubuntu:24.04` container. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or install path (`.github/workflows/install-container-test.yml`).
 - `sh home/.local/bin/herdr-agent-handoff-marker.test.sh` - the herdr tab-marker script, against a mocked `herdr` on a hermetic `PATH`.
 
-None of these touch this machine's real Homebrew, macOS defaults, `~/.claude`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify the riskier scripts (`work/bootstrap.sh`, `install.sh`) for real, in a container.
+None of these touch this machine's real Homebrew, macOS defaults, `~/.claude`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.

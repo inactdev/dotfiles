@@ -129,10 +129,15 @@ claude_settings_target_matches() {
 
 cc_alias_is() {
   local user="$1" expected="$2" actual
+  # bash -c wrapping matters here, not just quoting style: zsh itself isn't
+  # on docker exec's default PATH (there's no apt zsh in this image, only
+  # the Nix one) - $nix_env_prefix has to run in a shell FIRST to put it on
+  # PATH before "zsh" can be resolved as the exec target at all.
+  #
   # $aliases[cc], not the `alias` builtin: zsh's builtin quotes values that
   # contain spaces (cc='claude --dangerously-skip-permissions'), which only
   # the personal-posture alias does - the raw array avoids that asymmetry.
-  actual="$(docker exec -u "$user" "$CONTAINER" zsh -ic "${nix_env_prefix} echo -n \"\$aliases[cc]\"" 2>/dev/null)"
+  actual="$(docker exec -u "$user" "$CONTAINER" bash -c "$nix_env_prefix zsh -ic 'echo -n \"\$aliases[cc]\"'" 2>/dev/null)"
   [ "$actual" = "$expected" ]
 }
 
