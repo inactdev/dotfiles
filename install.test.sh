@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Test suite for install.sh's pure decision logic: personal-vs-work posture
-# detection and the settings-file choice that follows from it. Sources the
-# real install.sh (see the BASH_SOURCE guard at its tail) and calls its
-# functions directly against a scratch fake-dotfiles git repo, so it never
-# touches apt, npm, or any real download. This does NOT exercise the real
-# install (apt packages, neovim tarball, formatters, Claude Code CLI) - see
-# README.md for the real `docker run ubuntu:24.04` end-to-end run that
-# covers that path.
+# detection, and the require_codespaces guard. Sources the real install.sh
+# (see the BASH_SOURCE guard at its tail) and calls its functions directly
+# against a scratch fake-dotfiles git repo, so it never touches Nix, sudo,
+# or any real download. This does NOT exercise the real install (installing
+# Nix, starting nix-daemon, applying the codespace-personal/codespace-work
+# home-manager profile, chsh, nvim plugin sync) - see
+# install.container-test.sh for the real end-to-end container run that
+# covers that path, for both postures.
 #
 # Usage: bash install.test.sh
 set -uo pipefail
@@ -133,108 +134,6 @@ test_no_origin_remote_defaults_to_work() {
   teardown
 }
 
-# --- install_claude_settings -------------------------------------------------
-
-test_personal_posture_links_codespaces_settings() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" install_claude_settings "personal"
-  )
-  assert_eq "personal posture links codespaces/claude-settings.json" \
-    "$SCRIPT_DIR/codespaces/claude-settings.json" "$(readlink "$HOME/.claude/settings.json")"
-  teardown
-}
-
-test_work_posture_links_work_settings() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" install_claude_settings "work"
-  )
-  assert_eq "work posture links work/claude-settings.json" \
-    "$SCRIPT_DIR/work/claude-settings.json" "$(readlink "$HOME/.claude/settings.json")"
-  teardown
-}
-
-# --- configure_posture_shell -------------------------------------------------
-
-test_personal_posture_adds_skip_permissions_alias() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" configure_posture_shell "personal"
-  )
-  assert_contains "personal posture adds --dangerously-skip-permissions alias" \
-    "$(cat "$HOME/.zshrc.local")" 'alias cc="claude --dangerously-skip-permissions"'
-  teardown
-}
-
-test_personal_posture_alias_not_duplicated_on_rerun() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" configure_posture_shell "personal"
-    HOME="$HOME" configure_posture_shell "personal"
-  )
-  assert_eq "alias line appears exactly once after two runs" "1" \
-    "$(grep -cF 'alias cc="claude --dangerously-skip-permissions"' "$HOME/.zshrc.local")"
-  teardown
-}
-
-test_posture_flip_to_work_removes_skip_permissions_alias() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" configure_posture_shell "personal"
-    HOME="$HOME" configure_posture_shell "work"
-  )
-  if grep -qF 'alias cc="claude --dangerously-skip-permissions"' "$HOME/.zshrc.local" 2>/dev/null; then
-    fail_count=$((fail_count + 1))
-    echo "FAIL - alias must not survive a personal -> work posture flip"
-  else
-    pass_count=$((pass_count + 1))
-    echo "ok - alias removed on personal -> work posture flip"
-  fi
-  teardown
-}
-
-test_posture_flip_to_work_preserves_other_zshrc_local_lines() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" configure_posture_shell "personal"
-    echo 'export SOME_OTHER_VAR=1' >>"$HOME/.zshrc.local"
-    HOME="$HOME" configure_posture_shell "work"
-  )
-  assert_contains "unrelated .zshrc.local lines survive the flip" \
-    "$(cat "$HOME/.zshrc.local")" 'export SOME_OTHER_VAR=1'
-  teardown
-}
-
-test_work_posture_does_not_touch_zshrc_local() {
-  setup
-  (
-    # shellcheck disable=SC1090
-    source "$SCRIPT"
-    HOME="$HOME" configure_posture_shell "work"
-  )
-  if [ -e "$HOME/.zshrc.local" ]; then
-    fail_count=$((fail_count + 1))
-    echo "FAIL - work posture must not create .zshrc.local"
-  else
-    pass_count=$((pass_count + 1))
-    echo "ok - work posture leaves .zshrc.local untouched"
-  fi
-  teardown
-}
-
 # --- require_codespaces -------------------------------------------------------
 
 test_require_codespaces_fails_outside_a_codespace() {
@@ -257,6 +156,11 @@ test_require_codespaces_fails_outside_a_codespace() {
 }
 
 # --- settings-file content ----------------------------------------------------
+# The posture -> settings-file wiring itself now lives in
+# modules/codespace.nix (see flake.nix's homeConfigurations."codespace-
+# personal"/"codespace-work"), not install.sh, so it's exercised by
+# install.container-test.sh instead of a bash unit test here. What's left
+# to check at this level is just the static file content each posture links.
 
 test_codespaces_claude_settings_no_hooks_keeps_skip_permissions() {
   jq empty "$SCRIPT_DIR/codespaces/claude-settings.json"
@@ -266,10 +170,18 @@ test_codespaces_claude_settings_no_hooks_keeps_skip_permissions() {
     "$(jq -r '.skipDangerousModePermissionPrompt' "$SCRIPT_DIR/codespaces/claude-settings.json")"
 }
 
+test_work_claude_settings_no_hooks_no_skip_permissions() {
+  jq empty "$SCRIPT_DIR/work/claude-settings.json"
+  assert_eq "no hooks key" "" \
+    "$(jq -r 'if has("hooks") then "present" else "" end' "$SCRIPT_DIR/work/claude-settings.json")"
+  assert_eq "no skipDangerousModePermissionPrompt key" "" \
+    "$(jq -r 'if has("skipDangerousModePermissionPrompt") then "present" else "" end' "$SCRIPT_DIR/work/claude-settings.json")"
+}
+
 test_no_username_hardcoded_in_source() {
   hits=$(mktemp)
   if grep -RIn --exclude='*.test.sh' -e '/Users/inactdev' -e 'inactdev' \
-    "$SCRIPT" "$SCRIPT_DIR/codespaces" >"$hits" 2>/dev/null; then
+    "$SCRIPT" "$SCRIPT_DIR/codespaces" "$SCRIPT_DIR/modules/codespace.nix" >"$hits" 2>/dev/null; then
     fail_count=$((fail_count + 1))
     echo "FAIL - codespaces-host code hard-codes the personal username:"
     cat "$hits"
@@ -287,15 +199,9 @@ test_owner_comparison_is_case_insensitive
 test_different_owner_is_work
 test_missing_github_repository_defaults_to_work
 test_no_origin_remote_defaults_to_work
-test_personal_posture_links_codespaces_settings
-test_work_posture_links_work_settings
-test_personal_posture_adds_skip_permissions_alias
-test_personal_posture_alias_not_duplicated_on_rerun
-test_posture_flip_to_work_removes_skip_permissions_alias
-test_posture_flip_to_work_preserves_other_zshrc_local_lines
-test_work_posture_does_not_touch_zshrc_local
 test_require_codespaces_fails_outside_a_codespace
 test_codespaces_claude_settings_no_hooks_keeps_skip_permissions
+test_work_claude_settings_no_hooks_no_skip_permissions
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

@@ -75,8 +75,12 @@ install_nix() {
     return
   fi
   echo "==> installing Nix (Determinate installer, container-safe mode)"
+  # sandbox = false: a codespace container's own seccomp/cgroup setup
+  # commonly can't nest Nix's build sandbox (it needs to create its own
+  # user+mount namespaces) - see install.container-test.sh, which hit
+  # "unable to load seccomp BPF program" without this.
   curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix |
-    sh -s -- install linux --init none --no-confirm
+    sh -s -- install linux --init none --extra-conf "sandbox = false" --no-confirm
   # shellcheck disable=SC1091
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 }
@@ -89,9 +93,11 @@ start_nix_daemon() {
     return
   fi
   echo "==> starting nix-daemon (--init none leaves no service manager to do it)"
+  # shellcheck disable=SC2024 # /tmp/nix-daemon.log is written by us, not
+  # sudo - only the daemon process itself needs to run as root.
   sudo -b /nix/var/nix/profiles/default/bin/nix-daemon >/tmp/nix-daemon.log 2>&1
-  local i
-  for i in $(seq 1 30); do
+  local _i
+  for _i in $(seq 1 30); do
     if [ -S /nix/var/nix/daemon-socket/socket ]; then
       echo "==> nix-daemon up"
       return
@@ -118,9 +124,13 @@ apply_home_manager_profile() {
   # guaranteed to have it set.
   USER="$(whoami)" "$nix_bin" run github:nix-community/home-manager/release-26.05#home-manager -- \
     switch --flake "$HOME/.dotfiles#codespace-$posture" --impure -b hm-backup
-  # shellcheck disable=SC1091
-  [ -f "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" ] &&
+  # A bare `[ cond ] && cmd` here would make this function's own return
+  # status depend on that test - fine everywhere it's used, but a trap for
+  # future callers where this ends up as the last statement (see AGENTS.md).
+  if [ -f "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" ]; then
+    # shellcheck disable=SC1091
     . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
+  fi
 }
 
 set_zsh_as_default_shell() {
