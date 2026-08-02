@@ -41,6 +41,26 @@
           ...
         }@args:
         lib.mkMerge (map (f: import f args) files);
+      # The two codespace outputs differ only in the posture string handed
+      # to modules/codespace.nix - see the codespace comment block below.
+      mkCodespace =
+        posture:
+        home-manager.lib.homeManagerConfiguration {
+          pkgs = import nixpkgs {
+            system = "x86_64-linux";
+            config.allowUnfree = true;
+          };
+          extraSpecialArgs = {
+            user = builtins.getEnv "USER";
+            inherit posture;
+          };
+          modules = [
+            (homeModules [
+              ./modules/core.nix
+              ./modules/codespace.nix
+            ])
+          ];
+        };
     in
     {
       # Nix HOSTS live here. Each entry below is one named machine recipe.
@@ -91,7 +111,8 @@
       # modules/codespace.nix - no modules/desktop.nix (no ghostty, no
       # fonts, no git identity, no local-machine Claude settings) and no
       # modules/mac.nix (no herdr, no launchd), all structurally absent
-      # because this list never imports those files. `posture` picks the
+      # because mkCodespace's module list never imports those files.
+      # `posture` picks the
       # two things modules/codespace.nix still varies by hand (which
       # claude-settings.json, and the `cc` alias) - everything else is
       # identical between the two, including the full modules/core.nix
@@ -103,39 +124,8 @@
       # captain's own username), read from the environment instead. That
       # makes these the only flake outputs that require --impure to
       # evaluate or build; install.sh always passes that flag for them.
-      homeConfigurations."codespace-personal" = home-manager.lib.homeManagerConfiguration {
-        pkgs = import nixpkgs {
-          system = "x86_64-linux";
-          config.allowUnfree = true;
-        };
-        extraSpecialArgs = {
-          user = builtins.getEnv "USER";
-          posture = "personal";
-        };
-        modules = [
-          (homeModules [
-            ./modules/core.nix
-            ./modules/codespace.nix
-          ])
-        ];
-      };
-
-      homeConfigurations."codespace-work" = home-manager.lib.homeManagerConfiguration {
-        pkgs = import nixpkgs {
-          system = "x86_64-linux";
-          config.allowUnfree = true;
-        };
-        extraSpecialArgs = {
-          user = builtins.getEnv "USER";
-          posture = "work";
-        };
-        modules = [
-          (homeModules [
-            ./modules/core.nix
-            ./modules/codespace.nix
-          ])
-        ];
-      };
+      homeConfigurations."codespace-personal" = mkCodespace "personal";
+      homeConfigurations."codespace-work" = mkCodespace "work";
 
       # The "work" host is NOT a Nix host - it's the brew-only --no-nix path
       # under work/ (see README.md), so it never appears here. There is no

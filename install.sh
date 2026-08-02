@@ -87,18 +87,29 @@ install_nix() {
 
 # --init none means nothing starts/supervises nix-daemon for us; without it
 # running, every Nix command from a non-root user fails to reach the store.
+#
+# Liveness is a real daemon round-trip, not a socket-file existence test:
+# the socket file outlives a dead daemon (nothing restarts it after a
+# codespace stop/resume, while /nix - stale socket included - persists), so
+# an existence test would make a repair rerun skip startup and then fail
+# later at the home-manager step with a bare connection error.
+nix_daemon_alive() {
+  /nix/var/nix/profiles/default/bin/nix store info --store daemon >/dev/null 2>&1
+}
+
 start_nix_daemon() {
-  if [ -S /nix/var/nix/daemon-socket/socket ]; then
+  if nix_daemon_alive; then
     echo "==> nix-daemon already running"
     return
   fi
   echo "==> starting nix-daemon (--init none leaves no service manager to do it)"
+  sudo rm -f /nix/var/nix/daemon-socket/socket
   # shellcheck disable=SC2024 # /tmp/nix-daemon.log is written by us, not
   # sudo - only the daemon process itself needs to run as root.
   sudo -b /nix/var/nix/profiles/default/bin/nix-daemon >/tmp/nix-daemon.log 2>&1
   local _i
   for _i in $(seq 1 30); do
-    if [ -S /nix/var/nix/daemon-socket/socket ]; then
+    if nix_daemon_alive; then
       echo "==> nix-daemon up"
       return
     fi

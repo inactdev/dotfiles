@@ -16,6 +16,7 @@ on:
       - flake.lock
       - modules/**
       - codespaces/**
+      - home/.config/nvim/**
       - work/claude-settings.json
       - .github/workflows/install-container-test.yml
   pull_request:
@@ -27,6 +28,7 @@ on:
       - flake.lock
       - modules/**
       - codespaces/**
+      - home/.config/nvim/**
       - work/claude-settings.json
       - .github/workflows/install-container-test.yml
   workflow_dispatch: {}

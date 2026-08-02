@@ -88,6 +88,22 @@ for user in codespace-personal codespace-work; do
   "
 done
 
+# Seed conflicts a real codespace can have before install.sh runs: GitHub's
+# own default-branch auto-dotfiles-install step can leave ~/.config/nvim
+# behind as a symlink-to-directory, and a base image can ship a ~/.zshrc -
+# both paths this profile manages, so the switch must back them up instead
+# of aborting the whole activation. This is the regression test for
+# `-b hm-backup` having to precede `switch` (see apply_home_manager_profile
+# in install.sh): placed after `switch` it is silently dropped, the
+# activation aborts on these seeded files, and this run fails.
+docker exec -u codespace-personal "$CONTAINER" bash -c '
+  set -e
+  mkdir -p ~/.config ~/leftover-nvim
+  echo "-- leftover" > ~/leftover-nvim/init.lua
+  ln -s "$HOME/leftover-nvim" ~/.config/nvim
+  echo "# leftover zshrc" > ~/.zshrc
+'
+
 PERSONAL_REPO="$(origin_owner "$ORIGIN_URL")/some-personal-project"
 WORK_REPO="acme-corp/widgets" # deliberately a different owner - see detect_posture in install.sh
 
@@ -146,6 +162,21 @@ default_shell_is_zsh() {
   docker exec "$CONTAINER" bash -c "getent passwd '$user' | cut -d: -f7" | grep -q '/zsh$'
 }
 
+seeded_nvim_backed_up() {
+  docker exec -u codespace-personal "$CONTAINER" bash -c \
+    '[ "$(readlink "$HOME/.config/nvim.hm-backup")" = "$HOME/leftover-nvim" ]'
+}
+
+seeded_zshrc_backed_up() {
+  docker exec -u codespace-personal "$CONTAINER" bash -c \
+    'grep -q "leftover zshrc" "$HOME/.zshrc.hm-backup"'
+}
+
+nvim_config_is_managed() {
+  docker exec -u codespace-personal "$CONTAINER" bash -c \
+    '[ "$(readlink -f "$HOME/.config/nvim")" = "$HOME/dotfiles-src/home/.config/nvim" ]'
+}
+
 for user in codespace-personal codespace-work; do
   for tool in nvim rg fd fzf jq; do
     assert "$user: $tool on PATH" tool_on_path "$user" "$tool"
@@ -163,6 +194,13 @@ assert "codespace-personal: cc alias is --dangerously-skip-permissions" \
   cc_alias_is codespace-personal "claude --dangerously-skip-permissions"
 assert "codespace-work: cc alias is plain claude" \
   cc_alias_is codespace-work "claude"
+
+assert "codespace-personal: seeded ~/.config/nvim symlink backed up as .hm-backup" \
+  seeded_nvim_backed_up
+assert "codespace-personal: seeded ~/.zshrc backed up as .hm-backup" \
+  seeded_zshrc_backed_up
+assert "codespace-personal: ~/.config/nvim now resolves to the repo config" \
+  nvim_config_is_managed
 
 echo ""
 echo "$pass_count passed, $fail_count failed"
