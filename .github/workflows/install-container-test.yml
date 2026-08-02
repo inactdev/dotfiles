@@ -7,7 +7,7 @@ name: install.sh container rehearsal
 # emulation). See AGENTS.md and install.container-test.sh.
 on:
   push:
-    branches: [master, fm/dotfiles-codespace-nix] # TEMP: dropped before merge, see PR description
+    branches: [master]
     paths:
       - install.sh
       - install.container-test.sh
