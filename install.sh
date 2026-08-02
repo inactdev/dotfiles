@@ -122,8 +122,15 @@ apply_home_manager_profile() {
   # rather than hardcoding the captain's own username (see flake.nix) -
   # export it explicitly since not every codespace base image is
   # guaranteed to have it set.
+  #
+  # -b hm-backup MUST precede `switch`: home-manager's `[OPTION] COMMAND`
+  # CLI shape means `-b` is a top-level flag, not one `switch` itself
+  # accepts - `switch --flake ... -b hm-backup` silently drops it instead
+  # of erroring, so a base image that happens to ship a default ~/.zshrc
+  # (or any other file this profile also manages) would abort the whole
+  # activation instead of getting backed up - see install.container-test.sh.
   USER="$(whoami)" "$nix_bin" run github:nix-community/home-manager/release-26.05#home-manager -- \
-    switch --flake "$HOME/.dotfiles#codespace-$posture" --impure -b hm-backup
+    -b hm-backup switch --flake "$HOME/.dotfiles#codespace-$posture" --impure
   # A bare `[ cond ] && cmd` here would make this function's own return
   # status depend on that test - fine everywhere it's used, but a trap for
   # future callers where this ends up as the last statement (see AGENTS.md).
