@@ -155,6 +155,71 @@ test_require_codespaces_fails_outside_a_codespace() {
   teardown
 }
 
+# --- backup_legacy_dotfile_symlinks -------------------------------------------
+# home-manager's -b only backs up regular files - an existing symlink at a
+# managed path aborts the activation - so install.sh moves legacy symlinks
+# (GitHub's default-branch auto-dotfiles-install leftovers) aside itself
+# before the switch. See apply_home_manager_profile in install.sh and the
+# seeded-conflict regression in install.container-test.sh.
+
+test_legacy_symlink_is_moved_to_hm_backup() {
+  setup
+  mkdir -p "$HOME/.config" "$TMP/leftover-nvim"
+  ln -s "$TMP/leftover-nvim" "$HOME/.config/nvim"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    backup_legacy_dotfile_symlinks >/dev/null
+  )
+  assert_eq "leftover symlink moved aside" "" \
+    "$([ -e "$HOME/.config/nvim" ] || [ -L "$HOME/.config/nvim" ] && echo "still there")"
+  assert_eq "backup keeps the original target" "$TMP/leftover-nvim" \
+    "$(readlink "$HOME/.config/nvim.hm-backup" 2>/dev/null)"
+  teardown
+}
+
+test_regular_file_is_left_for_home_manager_b_flag() {
+  setup
+  echo "base image zshrc" >"$HOME/.zshrc"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    backup_legacy_dotfile_symlinks >/dev/null
+  )
+  assert_eq "regular file untouched (home-manager -b handles it)" \
+    "base image zshrc" "$(cat "$HOME/.zshrc")"
+  teardown
+}
+
+test_nix_store_symlink_is_left_alone() {
+  setup
+  ln -s "/nix/store/abc123-home-manager-files/.zshrc" "$HOME/.zshrc"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    backup_legacy_dotfile_symlinks >/dev/null
+  )
+  assert_eq "home-manager's own store symlink untouched (rerun idempotency)" \
+    "/nix/store/abc123-home-manager-files/.zshrc" "$(readlink "$HOME/.zshrc")"
+  teardown
+}
+
+test_existing_backup_is_never_clobbered() {
+  setup
+  echo "real earlier backup" >"$HOME/.zshrc.hm-backup"
+  ln -s "$TMP/somewhere" "$HOME/.zshrc"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    backup_legacy_dotfile_symlinks >/dev/null
+  )
+  assert_eq "earlier backup content preserved" \
+    "real earlier backup" "$(cat "$HOME/.zshrc.hm-backup")"
+  assert_eq "leftover symlink still removed" "" \
+    "$([ -e "$HOME/.zshrc" ] || [ -L "$HOME/.zshrc" ] && echo "still there")"
+  teardown
+}
+
 # --- settings-file content ----------------------------------------------------
 # The posture -> settings-file wiring itself now lives in
 # modules/codespace.nix (see flake.nix's homeConfigurations."codespace-
@@ -200,6 +265,10 @@ test_different_owner_is_work
 test_missing_github_repository_defaults_to_work
 test_no_origin_remote_defaults_to_work
 test_require_codespaces_fails_outside_a_codespace
+test_legacy_symlink_is_moved_to_hm_backup
+test_regular_file_is_left_for_home_manager_b_flag
+test_nix_store_symlink_is_left_alone
+test_existing_backup_is_never_clobbered
 test_codespaces_claude_settings_no_hooks_keeps_skip_permissions
 test_work_claude_settings_no_hooks_no_skip_permissions
 

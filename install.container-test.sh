@@ -91,11 +91,14 @@ done
 # Seed conflicts a real codespace can have before install.sh runs: GitHub's
 # own default-branch auto-dotfiles-install step can leave ~/.config/nvim
 # behind as a symlink-to-directory, and a base image can ship a ~/.zshrc -
-# both paths this profile manages, so the switch must back them up instead
-# of aborting the whole activation. This is the regression test for
-# `-b hm-backup` having to precede `switch` (see apply_home_manager_profile
-# in install.sh): placed after `switch` it is silently dropped, the
-# activation aborts on these seeded files, and this run fails.
+# both paths this profile manages, so install.sh must back them up instead
+# of aborting the whole activation. The two seeds cover the two distinct
+# mechanisms: the regular-file ~/.zshrc is home-manager's own `-b hm-backup`
+# (which MUST precede `switch` - placed after it it's silently dropped),
+# while the ~/.config/nvim *symlink* is backup_legacy_dotfile_symlinks in
+# install.sh - home-manager's collision check refuses to back up symlinks
+# at all (every backup branch in its check-link-targets.sh requires
+# `! -L`), so install.sh has to move those aside itself before the switch.
 docker exec -u codespace-personal "$CONTAINER" bash -c '
   set -e
   mkdir -p ~/.config ~/leftover-nvim

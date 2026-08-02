@@ -119,6 +119,41 @@ start_nix_daemon() {
   exit 1
 }
 
+# home-manager's -b only ever backs up regular files: its collision check
+# (checkLinkTargets) refuses to touch an existing *symlink* at a path the
+# profile manages - every backup branch there requires `! -L` - and aborts
+# the whole activation with "would be clobbered" instead. Symlinks are
+# exactly what GitHub's own default-branch auto-dotfiles-install step
+# leaves behind (the pre-Nix install.sh hand-linked each of these paths),
+# so move any such non-Nix symlink aside ourselves, using the same
+# .hm-backup suffix home-manager gives regular-file backups. Symlinks that
+# point into /nix/store are home-manager's own and stay put, keeping
+# reruns idempotent. Exercised by install.container-test.sh's
+# seeded-conflict regression.
+backup_legacy_dotfile_symlinks() {
+  local path target
+  for path in \
+    "$HOME/.zshrc" \
+    "$HOME/.config/nvim" \
+    "$HOME/.config/starship.toml" \
+    "$HOME/AGENTS.md" \
+    "$HOME/.claude/CLAUDE.md" \
+    "$HOME/.claude/settings.json"; do
+    [ -L "$path" ] || continue
+    target="$(readlink "$path")"
+    case "$target" in /nix/store/*) continue ;; esac
+    if [ -e "$path.hm-backup" ] || [ -L "$path.hm-backup" ]; then
+      # An earlier backup may hold real file content - never clobber it.
+      # The leftover itself is only a symlink, so dropping it loses nothing.
+      echo "==> removing leftover symlink $path ($path.hm-backup already exists)"
+      rm "$path"
+    else
+      echo "==> backing up leftover symlink $path -> $path.hm-backup"
+      mv "$path" "$path.hm-backup"
+    fi
+  done
+}
+
 # The out-of-store symlinks in modules/core.nix (nvim config, AGENTS.md, ...)
 # resolve through ~/.dotfiles, exactly like run.sh's Nix path sets up on
 # personal-mac/home-linux - so editing ~/.dotfiles/home/... in a running
@@ -127,6 +162,7 @@ apply_home_manager_profile() {
   local posture="$1" nix_bin
   echo "==> linking repo to ~/.dotfiles"
   ln -sfn "$SCRIPT_DIR" "$HOME/.dotfiles"
+  backup_legacy_dotfile_symlinks
   nix_bin="$(command -v nix)"
   echo "==> applying the codespace-$posture home-manager profile"
   # --impure: flake.nix reads USER from the environment for this profile
