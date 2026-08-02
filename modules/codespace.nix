@@ -34,12 +34,16 @@ in
   # hooks stripped, since those tools aren't installed in a codespace;
   # work/claude-settings.json is the same work Mac uses (see README.md).
   home.file.".claude/settings.json".source = config.lib.file.mkOutOfStoreSymlink (
-    if isPersonal then "${dotfiles}/codespaces/claude-settings.json" else "${dotfiles}/work/claude-settings.json"
+    if isPersonal then
+      "${dotfiles}/codespaces/claude-settings.json"
+    else
+      "${dotfiles}/work/claude-settings.json"
   );
 
   # Personal posture gets the same --dangerously-skip-permissions `cc` as
   # personal-mac/home-linux (modules/desktop.nix); work posture keeps the
   # safe, locked-down plain alias - see core.nix's shellAliases comment for
   # why `cc` isn't set there.
-  programs.zsh.shellAliases.cc = if isPersonal then "claude --dangerously-skip-permissions" else "claude";
+  programs.zsh.shellAliases.cc =
+    if isPersonal then "claude --dangerously-skip-permissions" else "claude";
 }

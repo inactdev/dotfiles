@@ -4,7 +4,7 @@
 #
 # Every function here is idempotent and safe to re-run. Nothing in this
 # file may assume a specific username or home directory layout beyond
-# $HOME, and nothing here may touch flake.nix/home.nix/configuration.nix
+# $HOME, and nothing here may touch flake.nix/modules/*.nix/configuration.nix
 # or the personal-mac (Nix) path.
 set -euo pipefail
 

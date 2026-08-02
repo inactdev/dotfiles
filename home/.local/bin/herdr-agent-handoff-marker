@@ -9,7 +9,7 @@
 #
 # An explicit scope is always required (--all or --only) - there is no
 # default whole-workspace sweep, so the script cannot repaint tabs it
-# was not deliberately pointed at. Only the launchd job (home.nix) should
+# was not deliberately pointed at. Only the launchd job (modules/mac.nix) should
 # pass --all; manual runs and tests should use --only <tab-id> and/or
 # --dry-run against a throwaway tab, never the bare command against a
 # live herdr session.

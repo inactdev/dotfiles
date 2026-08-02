@@ -129,7 +129,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 
 - `bash run.test.sh` - host selection logic in `run.sh`, against a mocked `uname`.
 - `sh work/bootstrap.test.sh` - the work host's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
-- `bash install.test.sh` - the Codespaces posture-detection logic, hermetic (no apt/npm/network).
+- `bash install.test.sh` - the Codespaces posture-detection logic, hermetic (no Nix/network).
 - `bash install.container-test.sh` - the real Codespaces install (Nix, then both `codespace-personal`/`codespace-work` home-manager profiles) inside a disposable `ubuntu:24.04` container. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or install path (`.github/workflows/install-container-test.yml`).
 - `sh home/.local/bin/herdr-agent-handoff-marker.test.sh` - the herdr tab-marker script, against a mocked `herdr` on a hermetic `PATH`.
 

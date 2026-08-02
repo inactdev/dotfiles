@@ -2,7 +2,7 @@
 # Test suite for herdr-agent-handoff-marker. Runs the real script against a
 # mocked `herdr` CLI (see mock_herdr_bin() below) so it never touches a live
 # herdr daemon or any real tab - safe to run any time, by anyone, with no
-# side effects outside a temp dir. Not deployed: home.nix only symlinks the
+# side effects outside a temp dir. Not deployed: modules/mac.nix only symlinks the
 # script itself, not this file.
 #
 # Usage: sh home/.local/bin/herdr-agent-handoff-marker.test.sh
