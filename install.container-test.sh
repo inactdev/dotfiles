@@ -129,8 +129,11 @@ claude_settings_target_matches() {
 
 cc_alias_is() {
   local user="$1" expected="$2" actual
-  actual="$(docker exec -u "$user" "$CONTAINER" bash -c "$nix_env_prefix zsh -ic 'alias cc'" 2>/dev/null)"
-  [ "$actual" = "cc=$expected" ]
+  # $aliases[cc], not the `alias` builtin: zsh's builtin quotes values that
+  # contain spaces (cc='claude --dangerously-skip-permissions'), which only
+  # the personal-posture alias does - the raw array avoids that asymmetry.
+  actual="$(docker exec -u "$user" "$CONTAINER" zsh -ic "${nix_env_prefix} echo -n \"\$aliases[cc]\"" 2>/dev/null)"
+  [ "$actual" = "$expected" ]
 }
 
 default_shell_is_zsh() {
