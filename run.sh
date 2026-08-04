@@ -26,7 +26,7 @@ validate_dir "$DIR" || exit 1
 
 usage() {
   cat <<'EOF'
-Usage: ./run.sh [command] [host] [--no-nix]
+Usage: ./run.sh [command] [host] [--no-nix] [--relink]
 
 With no command at all, ./run.sh behaves like `./run.sh bootstrap`.
 
