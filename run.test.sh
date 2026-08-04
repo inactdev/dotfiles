@@ -195,7 +195,26 @@ exit 0
 MOCK
     chmod +x "$dir/$name"
   done
+  mock_whoami "$dir"
   : >"$TMP/invoked.log"
+}
+
+# cmd_bootstrap_nix's step 3/4 greps flake.nix for `user = "$(whoami)"` and
+# exits 1 on a mismatch, so any test that runs a bootstrap past step 2/4
+# would otherwise only pass on the repo owner's own account and fail on CI,
+# in a codespace, or for a second contributor - for reasons unrelated to the
+# symlink guards under test. Reads the expected name out of flake.nix rather
+# than hardcoding it, so this mock can't drift from the file it must match
+# (and so no personal username is duplicated into the test suite).
+mock_whoami() {
+  local dir=$1
+  local flake_user
+  flake_user=$(sed -n 's/^[[:space:]]*user = "\([^"]*\)".*/\1/p' "$SCRIPT_DIR/flake.nix" | head -1)
+  cat >"$dir/whoami" <<MOCK
+#!/bin/sh
+echo "$flake_user"
+MOCK
+  chmod +x "$dir/whoami"
 }
 
 # Runs one of run.sh's command functions with every switcher mocked and HOME
@@ -446,6 +465,30 @@ test_link_dotfiles_refuses_real_directory_even_with_relink() {
   teardown
 }
 
+# README prescribes no clone location and every message here names
+# ~/.dotfiles, so cloning the repo straight to ~/.dotfiles is a natural
+# reading. On that machine DIR == $HOME/.dotfiles is a real directory that
+# already resolves to $target - the checkout is already where it belongs, so
+# this must be a no-op rather than a refusal whose only advice ("move or
+# remove it by hand") would delete the clone.
+test_link_dotfiles_noop_when_checkout_itself_is_dotfiles() {
+  setup
+  mkdir -p "$TMP/home/.dotfiles"
+  target=$(cd -- "$TMP/home/.dotfiles" && pwd -P)
+  out=$(run_link_dotfiles "$target" "0" "$TMP/home" 2>&1)
+  assert_eq "checkout cloned straight to ~/.dotfiles is a silent no-op" "rc=0" "$out"
+  if [ -L "$TMP/home/.dotfiles" ] || [ ! -d "$TMP/home/.dotfiles" ] \
+    || [ -n "$(ls -A "$TMP/home/.dotfiles")" ]; then
+    fail_count=$((fail_count + 1))
+    echo "FAIL - a checkout that IS ~/.dotfiles must be left exactly as it was"
+    ls -la "$TMP/home"
+  else
+    pass_count=$((pass_count + 1))
+    echo "ok - a checkout that IS ~/.dotfiles left exactly as it was"
+  fi
+  teardown
+}
+
 test_link_dotfiles_refuses_real_file_even_with_relink() {
   setup
   mkdir -p "$TMP/home"
@@ -563,6 +606,7 @@ test_link_dotfiles_relink_moves_it
 test_link_dotfiles_noop_when_relative_symlink_resolves_to_target
 test_link_dotfiles_noop_when_symlink_has_trailing_slash
 test_link_dotfiles_refuses_real_directory_even_with_relink
+test_link_dotfiles_noop_when_checkout_itself_is_dotfiles
 test_link_dotfiles_refuses_real_file_even_with_relink
 test_rebuild_refusal_aborts_before_any_switcher_runs
 test_bootstrap_refusal_aborts_before_any_switcher_runs

@@ -181,17 +181,27 @@ resolve_host() {
 # link that is already correct. When it exists and resolves somewhere else,
 # refuses rather than silently clobbering it, unless $relink is 1 - see
 # issue #9, where an unconditional `ln -sfn` here is what hijacked and then
-# destroyed the live ~/.dotfiles. A ~/.dotfiles that is a real file or
-# directory is refused unconditionally, --relink included: --relink means
-# "repoint an existing symlink", and `ln -sfn` against a real directory
-# silently nests a stray symlink inside it and exits 0 - the same blind
-# write issue #9 was about.
+# destroyed the live ~/.dotfiles. A ~/.dotfiles that is some OTHER real file
+# or directory is refused, --relink included: --relink means "repoint an
+# existing symlink", and `ln -sfn` against a real directory silently nests a
+# stray symlink inside it and exits 0 - the same blind write issue #9 was
+# about. The resolved-path comparison deliberately runs before that check,
+# so a checkout cloned straight to ~/.dotfiles (DIR == $HOME/.dotfiles, a
+# real directory that already resolves to $target) is the same silent no-op
+# as a correct symlink instead of an unfixable refusal.
 link_dotfiles() {
   local target="$1" relink="$2"
   local link="$HOME/.dotfiles"
 
   if [ ! -e "$link" ] && [ ! -L "$link" ]; then
     ln -sfn "$target" "$link"
+    return 0
+  fi
+
+  local resolved
+  resolved="$(cd "$link" 2>/dev/null && pwd -P)" || resolved=""
+
+  if [ -n "$resolved" ] && [ "$resolved" = "$target" ]; then
     return 0
   fi
 
@@ -203,13 +213,8 @@ link_dotfiles() {
     return 1
   fi
 
-  local current resolved
+  local current
   current="$(readlink "$link")"
-  resolved="$(cd "$link" 2>/dev/null && pwd -P)" || resolved=""
-
-  if [ -n "$resolved" ] && [ "$resolved" = "$target" ]; then
-    return 0
-  fi
 
   if [ "$relink" = 1 ]; then
     echo "    relinking ~/.dotfiles: '$current' -> '$target'"
