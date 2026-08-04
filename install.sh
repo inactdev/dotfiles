@@ -203,7 +203,7 @@ sync_neovim_plugins() {
 main() {
   require_codespaces
   local posture
-  posture="$(detect_posture)"
+  posture="$(detect_posture "$SCRIPT_DIR")"
   echo "==> posture: $posture"
 
   install_nix

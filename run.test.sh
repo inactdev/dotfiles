@@ -399,8 +399,12 @@ test_link_dotfiles_refuses_when_pointing_elsewhere() {
 test_link_dotfiles_refuses_on_dangling_empty_target_symlink() {
   setup
   mkdir -p "$TMP/home"
-  # Reproduces the exact corrupted state from issue #9: `ln -sfn "" ~/.dotfiles`.
-  ln -sfn "" "$TMP/home/.dotfiles"
+  # Reproduces the corrupted state from issue #9: a dangling ~/.dotfiles
+  # symlink. The literal empty-target form (`ln -sfn "" ~/.dotfiles`) only
+  # exists on macOS - Linux rejects empty symlink targets outright - but
+  # both hit the same resolved="" refusal path in link_dotfiles, so a
+  # nonexistent target keeps the test cross-platform.
+  ln -sfn "$TMP/deleted-checkout" "$TMP/home/.dotfiles"
   out=$(run_link_dotfiles "$SCRIPT_DIR" "0" "$TMP/home" 2>&1)
   assert_contains "dangling empty-target symlink: refused" "$out" "rc=1"
   teardown

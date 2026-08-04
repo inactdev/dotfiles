@@ -134,3 +134,5 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `sh home/.local/bin/herdr-agent-handoff-marker.test.sh` - the herdr tab-marker script, against a mocked `herdr` on a hermetic `PATH`.
 
 None of these touch this machine's real Homebrew, macOS defaults, `~/.claude`, `~/.dotfiles`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
+
+The four hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
