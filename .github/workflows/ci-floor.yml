@@ -1,7 +1,7 @@
 name: CI floor
 
 # Minimal independent check floor for every PR: shellcheck, this repo's own
-# hermetic test suites, nixfmt --check, and an eval-only nix flake check.
+# hermetic test suites, nixfmt --check, and an eval-only `nix eval` per host.
 # Runs alongside install-container-test.yml, not instead of it - that
 # workflow covers the real Codespaces install path, this one is the cheap
 # floor every PR gets regardless of which files it touches.
@@ -51,11 +51,16 @@ jobs:
       - name: sh herdr-agent-handoff-marker.test.sh
         run: HOME="$(mktemp -d)" sh home/.local/bin/herdr-agent-handoff-marker.test.sh
 
-  # Eval-only: --no-build keeps this from ever building platform-specific
-  # outputs, and --all-systems stops flake check from silently omitting the
-  # darwin outputs (personal-mac) as incompatible systems on this Linux
-  # runner - eval itself is platform-independent, see the nix eval note in
-  # AGENTS.md.
+  # Eval-only, one explicit `nix eval` per host rather than `nix flake
+  # check`: darwinConfigurations/homeConfigurations aren't part of the
+  # standard flake schema, so plain `nix flake check` doesn't look at them
+  # at all, and only Determinate Nix's non-standard extended check does -
+  # silently losing all eval coverage if the installer action is ever
+  # swapped for upstream Nix. Forcing each host's toplevel/activationPackage
+  # drvPath evaluates its full module closure without building it, listing
+  # every host explicitly so none can be silently skipped - the same
+  # pattern AGENTS.md documents for manual eval-only verification, and one
+  # that upstream Nix supports identically to Determinate Nix.
   nix:
     runs-on: ubuntu-latest
     steps:
@@ -63,5 +68,11 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: nixfmt --check
         run: git ls-files -z '*.nix' | xargs -0 nix shell nixpkgs#nixfmt --command nixfmt --check
-      - name: nix flake check (eval only)
-        run: nix flake check --no-build --impure --all-systems
+      - name: nix eval darwinConfigurations.personal-mac (eval only)
+        run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).darwinConfigurations.personal-mac.config.system.build.toplevel.drvPath'
+      - name: nix eval homeConfigurations.home-linux (eval only)
+        run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).homeConfigurations.home-linux.activationPackage.drvPath'
+      - name: nix eval homeConfigurations.codespace-personal (eval only)
+        run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).homeConfigurations.codespace-personal.activationPackage.drvPath'
+      - name: nix eval homeConfigurations.codespace-work (eval only)
+        run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).homeConfigurations.codespace-work.activationPackage.drvPath'
