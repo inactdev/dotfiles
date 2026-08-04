@@ -135,4 +135,4 @@ opened for it will clone this repo and run `install.sh` on creation.
 
 None of these touch this machine's real Homebrew, macOS defaults, `~/.claude`, `~/.dotfiles`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
-All four (plus shellcheck and `nixfmt --check`/`nix flake check`) also run on every PR via `.github/workflows/ci-floor.yml`.
+The four hermetic suites (everything above except the container test), plus shellcheck and `nixfmt --check`/an eval-only `nix flake check`, also run on every PR via `.github/workflows/ci-floor.yml`.
