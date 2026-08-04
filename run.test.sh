@@ -215,7 +215,7 @@ run_cmd_sandboxed() {
     # shellcheck disable=SC2034 # read by link_dotfiles, sourced dynamically above
     relink=0
     HOME="$TMP/home"
-    # shellcheck disable=SC2031 # PATH is deliberately remocked per subshell
+    # shellcheck disable=SC2030,SC2031 # PATH is deliberately remocked per subshell
     PATH="$MOCK_DIR:$PATH"
     "$fn" "$host" >/dev/null 2>&1
   ) || true
@@ -397,6 +397,136 @@ test_link_dotfiles_relink_moves_it() {
   teardown
 }
 
+# A symlink that resolves to $target but isn't spelled the way run.sh would
+# have written it (relative, hand-restored, trailing slash) is already
+# correct. Comparing raw `readlink` text would refuse it and, under set -e,
+# kill every ./run.sh rebuild until --relink was passed.
+test_link_dotfiles_noop_when_relative_symlink_resolves_to_target() {
+  setup
+  mkdir -p "$TMP/home" "$TMP/checkout"
+  target=$(cd -- "$TMP/checkout" && pwd -P)
+  ln -sfn "../checkout" "$TMP/home/.dotfiles"
+  out=$(run_link_dotfiles "$target" "0" "$TMP/home" 2>&1)
+  assert_eq "relative symlink resolving to target is a silent no-op" "rc=0" "$out"
+  assert_eq "relative symlink left exactly as spelled on disk" "../checkout" \
+    "$(readlink "$TMP/home/.dotfiles")"
+  teardown
+}
+
+test_link_dotfiles_noop_when_symlink_has_trailing_slash() {
+  setup
+  mkdir -p "$TMP/home" "$TMP/checkout"
+  target=$(cd -- "$TMP/checkout" && pwd -P)
+  ln -sfn "$target/" "$TMP/home/.dotfiles"
+  out=$(run_link_dotfiles "$target" "0" "$TMP/home" 2>&1)
+  assert_eq "trailing-slash symlink is a silent no-op" "rc=0" "$out"
+  teardown
+}
+
+# `ln -sfn TARGET DIR` against an existing real directory nests a stray
+# symlink inside it and exits 0, leaving the switcher to run against the
+# wrong tree - so a non-symlink ~/.dotfiles is refused even with --relink.
+test_link_dotfiles_refuses_real_directory_even_with_relink() {
+  setup
+  mkdir -p "$TMP/home/.dotfiles"
+  out=$(run_link_dotfiles "$SCRIPT_DIR" "1" "$TMP/home" 2>&1)
+  assert_contains "real directory + --relink: refused" "$out" "rc=1"
+  assert_contains "real directory: explains it isn't a symlink" "$out" "is not a symlink"
+  if [ -L "$TMP/home/.dotfiles" ] || [ ! -d "$TMP/home/.dotfiles" ]; then
+    fail_count=$((fail_count + 1))
+    echo "FAIL - a real ~/.dotfiles directory must be left as a directory"
+  elif [ -n "$(ls -A "$TMP/home/.dotfiles")" ]; then
+    fail_count=$((fail_count + 1))
+    echo "FAIL - nothing may be written inside a real ~/.dotfiles directory:"
+    ls -la "$TMP/home/.dotfiles"
+  else
+    pass_count=$((pass_count + 1))
+    echo "ok - real ~/.dotfiles directory left untouched and empty"
+  fi
+  teardown
+}
+
+test_link_dotfiles_refuses_real_file_even_with_relink() {
+  setup
+  mkdir -p "$TMP/home"
+  echo "hand-written notes" >"$TMP/home/.dotfiles"
+  out=$(run_link_dotfiles "$SCRIPT_DIR" "1" "$TMP/home" 2>&1)
+  assert_contains "real file + --relink: refused" "$out" "rc=1"
+  assert_eq "real file: contents left untouched" "hand-written notes" \
+    "$(cat "$TMP/home/.dotfiles")"
+  teardown
+}
+
+# The invariant that actually protects the machine: link_dotfiles returning
+# non-zero must abort the whole command via set -e BEFORE any switcher runs.
+# Testing link_dotfiles in isolation can't see a regression where the call is
+# wrapped in an `if`/`|| true` - run.sh would then refuse to relink and still
+# switch against a foreign checkout, which is worse than the original bug.
+#
+# This has to exec the real script as a subprocess rather than reuse
+# run_cmd_sandboxed: that helper's `( ... ) || true` puts the whole subshell
+# in a tested context, which bash propagates inward and which disables the
+# very `set -e` these tests exist to prove. A fresh `bash run.sh` gets its own
+# clean set -e state, so this is also the only assertion here that exercises
+# run.sh exactly as a user invokes it, argv parsing included.
+run_script_sandboxed() {
+  mock_switchers "$MOCK_DIR"
+  # shellcheck disable=SC2031 # this shell's PATH is untouched; the mock is scoped to the child
+  HOME="$TMP/home" PATH="$MOCK_DIR:$PATH" bash "$SCRIPT" "$@" >/dev/null 2>&1
+  echo "rc=$?"
+  cat "$TMP/invoked.log"
+}
+
+test_rebuild_refusal_aborts_before_any_switcher_runs() {
+  setup
+  mkdir -p "$TMP/home" "$TMP/other-target"
+  ln -sfn "$TMP/other-target" "$TMP/home/.dotfiles"
+  out=$(run_script_sandboxed rebuild personal-mac)
+  assert_eq "refused rebuild exits non-zero and runs no switcher at all" "rc=1" "$out"
+  assert_eq "refused rebuild leaves ~/.dotfiles on its original target" \
+    "$TMP/other-target" "$(readlink "$TMP/home/.dotfiles")"
+  teardown
+}
+
+test_bootstrap_refusal_aborts_before_any_switcher_runs() {
+  setup
+  mkdir -p "$TMP/home" "$TMP/other-target"
+  ln -sfn "$TMP/other-target" "$TMP/home/.dotfiles"
+  out=$(run_script_sandboxed bootstrap personal-mac)
+  assert_eq "refused bootstrap exits non-zero and runs no switcher at all" "rc=1" "$out"
+  assert_eq "refused bootstrap leaves ~/.dotfiles on its original target" \
+    "$TMP/other-target" "$(readlink "$TMP/home/.dotfiles")"
+  teardown
+}
+
+# The counterpart: with nothing in the way, the same end-to-end invocation
+# must still create the symlink and reach the switcher - the first-run
+# bootstrap path that must not regress.
+test_bootstrap_creates_symlink_and_reaches_switcher_when_absent() {
+  setup
+  mkdir -p "$TMP/home"
+  out=$(run_script_sandboxed bootstrap personal-mac)
+  assert_contains "clean bootstrap succeeds" "$out" "rc=0"
+  assert_contains "clean bootstrap reaches the darwin switcher" "$out" \
+    "darwin-rebuild -- switch --flake"
+  assert_eq "clean bootstrap creates ~/.dotfiles pointing at this checkout" \
+    "$SCRIPT_DIR" "$(readlink "$TMP/home/.dotfiles")"
+  teardown
+}
+
+test_relink_flag_repoints_symlink_end_to_end() {
+  setup
+  mkdir -p "$TMP/home" "$TMP/other-target"
+  ln -sfn "$TMP/other-target" "$TMP/home/.dotfiles"
+  out=$(run_script_sandboxed rebuild personal-mac --relink)
+  assert_contains "--relink lets rebuild proceed" "$out" "rc=0"
+  assert_contains "--relink rebuild reaches the darwin switcher" "$out" \
+    "sudo darwin-rebuild switch --flake"
+  assert_eq "--relink repoints ~/.dotfiles at this checkout" \
+    "$SCRIPT_DIR" "$(readlink "$TMP/home/.dotfiles")"
+  teardown
+}
+
 test_no_username_hardcoded_in_run_sh() {
   hits=$(mktemp)
   if grep -RIn -e '/Users/inactdev' -e 'inactdev' "$SCRIPT" >"$hits" 2>/dev/null; then
@@ -430,6 +560,14 @@ test_link_dotfiles_noop_when_already_correct
 test_link_dotfiles_refuses_when_pointing_elsewhere
 test_link_dotfiles_refuses_on_dangling_empty_target_symlink
 test_link_dotfiles_relink_moves_it
+test_link_dotfiles_noop_when_relative_symlink_resolves_to_target
+test_link_dotfiles_noop_when_symlink_has_trailing_slash
+test_link_dotfiles_refuses_real_directory_even_with_relink
+test_link_dotfiles_refuses_real_file_even_with_relink
+test_rebuild_refusal_aborts_before_any_switcher_runs
+test_bootstrap_refusal_aborts_before_any_switcher_runs
+test_bootstrap_creates_symlink_and_reaches_switcher_when_absent
+test_relink_flag_repoints_symlink_end_to_end
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

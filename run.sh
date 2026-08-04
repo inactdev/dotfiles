@@ -79,10 +79,12 @@ COMMANDS
 FLAGS
   --no-nix           Selects the work (brew-only) host explicitly,
                      bypassing both the remembered choice and the menu.
-  --relink           If ~/.dotfiles already exists and points somewhere
+  --relink           If ~/.dotfiles is already a symlink pointing somewhere
                      other than this checkout, move it here instead of
                      refusing. Without this flag, an existing ~/.dotfiles
-                     pointing elsewhere is left untouched.
+                     pointing elsewhere is left untouched. A ~/.dotfiles
+                     that is a real file or directory is always refused,
+                     --relink included - move it by hand first.
 EOF
 }
 
@@ -173,10 +175,17 @@ resolve_host() {
 
 # Points ~/.dotfiles at $target. Creates it when absent - first-run
 # bootstrap on a fresh machine must keep working exactly as it does today.
-# A silent no-op when it already points at $target. When it exists and
-# points (or resolves) somewhere else, refuses rather than silently
-# clobbering it, unless $relink is 1 - see issue #9, where an unconditional
-# `ln -sfn` here is what hijacked and then destroyed the live ~/.dotfiles.
+# A silent no-op when it already resolves to $target, however that symlink
+# happens to be spelled on disk (relative, trailing slash, hand-restored) -
+# comparing raw `readlink` text against the physical $target would refuse a
+# link that is already correct. When it exists and resolves somewhere else,
+# refuses rather than silently clobbering it, unless $relink is 1 - see
+# issue #9, where an unconditional `ln -sfn` here is what hijacked and then
+# destroyed the live ~/.dotfiles. A ~/.dotfiles that is a real file or
+# directory is refused unconditionally, --relink included: --relink means
+# "repoint an existing symlink", and `ln -sfn` against a real directory
+# silently nests a stray symlink inside it and exits 0 - the same blind
+# write issue #9 was about.
 link_dotfiles() {
   local target="$1" relink="$2"
   local link="$HOME/.dotfiles"
@@ -186,12 +195,19 @@ link_dotfiles() {
     return 0
   fi
 
-  local current="<not a symlink>"
-  if [ -L "$link" ]; then
-    current="$(readlink "$link")"
+  if [ ! -L "$link" ]; then
+    echo "$link already exists and is not a symlink - refusing to touch it." >&2
+    echo "  proposed: $target" >&2
+    echo "Move or remove it by hand, then re-run. --relink only repoints an" >&2
+    echo "existing symlink; it will not clobber a real file or directory." >&2
+    return 1
   fi
 
-  if [ "$current" = "$target" ]; then
+  local current resolved
+  current="$(readlink "$link")"
+  resolved="$(cd "$link" 2>/dev/null && pwd -P)" || resolved=""
+
+  if [ -n "$resolved" ] && [ "$resolved" = "$target" ]; then
     return 0
   fi
 
