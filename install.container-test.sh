@@ -110,12 +110,19 @@ docker exec -u codespace-personal "$CONTAINER" bash -c '
 PERSONAL_REPO="$(origin_owner "$ORIGIN_URL")/some-personal-project"
 WORK_REPO="acme-corp/widgets" # deliberately a different owner - see detect_posture in install.sh
 
+# Asserted, not bare: this file runs without `set -e` (so one failed assert
+# doesn't abort the suite), so an unchecked install.sh exit status would be
+# discarded - and its last step (sync_neovim_plugins) runs after everything
+# the assertions below observe, so a failure there would otherwise leave the
+# rehearsal green while a real codespace reports a failed setup.
 echo "==> running install.sh (personal posture)"
-docker exec -u codespace-personal -e CODESPACES=true -e GITHUB_REPOSITORY="$PERSONAL_REPO" "$CONTAINER" \
+assert "install.sh exits 0 (personal posture)" \
+  docker exec -u codespace-personal -e CODESPACES=true -e GITHUB_REPOSITORY="$PERSONAL_REPO" "$CONTAINER" \
   bash -c 'cd ~/dotfiles-src && bash install.sh'
 
 echo "==> running install.sh (work posture)"
-docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
+assert "install.sh exits 0 (work posture)" \
+  docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
   bash -c 'cd ~/dotfiles-src && bash install.sh'
 
 # --- assertions --------------------------------------------------------------

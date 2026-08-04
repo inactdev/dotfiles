@@ -22,7 +22,6 @@
     }:
     let
       user = "inactdev"; # <-- output of `whoami`, nothing else
-      inherit (nixpkgs) lib;
       # Composes module files into the single function-module home-manager
       # expects (for `home-manager.users.<user>` directly, or wrapped in a
       # one-element `modules` list) - mirroring how the old single home.nix
@@ -41,6 +40,19 @@
           ...
         }@args:
         lib.mkMerge (map (f: import f args) files);
+      # The codespace container user, read from the environment (see the
+      # codespace comment block below). getEnv returns "" both when USER is
+      # unset and under pure evaluation, and an empty username would silently
+      # activate home-manager against /home/ - so refuse it here rather than
+      # failing confusingly downstream.
+      codespaceUser =
+        let
+          envUser = builtins.getEnv "USER";
+        in
+        if envUser == "" then
+          throw "codespace-personal/codespace-work need USER set in the evaluating environment - evaluate or build them with --impure"
+        else
+          envUser;
       # The two codespace outputs differ only in the posture string handed
       # to modules/codespace.nix - see the codespace comment block below.
       mkCodespace =
@@ -51,7 +63,7 @@
             config.allowUnfree = true;
           };
           extraSpecialArgs = {
-            user = builtins.getEnv "USER";
+            user = codespaceUser;
             inherit posture;
           };
           modules = [

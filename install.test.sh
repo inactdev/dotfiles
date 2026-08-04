@@ -245,8 +245,13 @@ test_work_claude_settings_no_hooks_no_skip_permissions() {
 
 test_no_username_hardcoded_in_source() {
   hits=$(mktemp)
+  # Every file a codespace host actually gets: install.sh, the personal
+  # settings file it links, and both modules the codespace-* flake outputs
+  # compose (modules/core.nix is where home.username = user lands, and is
+  # where the git identity now in modules/desktop.nix used to live).
   if grep -RIn --exclude='*.test.sh' -e '/Users/inactdev' -e 'inactdev' \
-    "$SCRIPT" "$SCRIPT_DIR/codespaces" "$SCRIPT_DIR/modules/codespace.nix" >"$hits" 2>/dev/null; then
+    "$SCRIPT" "$SCRIPT_DIR/codespaces" \
+    "$SCRIPT_DIR/modules/core.nix" "$SCRIPT_DIR/modules/codespace.nix" >"$hits" 2>/dev/null; then
     fail_count=$((fail_count + 1))
     echo "FAIL - codespaces-host code hard-codes the personal username:"
     cat "$hits"
