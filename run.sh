@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || DIR=""
 MARKER="$DIR/.dotfiles-host"
+
+# Refuses to continue if $dir isn't a real path to this repo checkout. DIR
+# can resolve empty (or to a stale/unrelated path) when run.sh's own
+# directory is removed or replaced out from under it - e.g. a throwaway
+# worktree cleaned up while a script invoked from it is still running. An
+# empty DIR reaching the ln -sfn calls below is what wrote a symlink to
+# nowhere over the live ~/.dotfiles (issue #9).
+validate_dir() {
+  local dir="$1"
+  if [ -z "$dir" ] || [ ! -f "$dir/run.sh" ] || [ ! -f "$dir/flake.nix" ]; then
+    echo "run.sh: can't verify its own directory (got '$dir')." >&2
+    echo "This usually means the checkout run.sh lives in was moved or" >&2
+    echo "deleted while it was still running, or \$DIR doesn't look like" >&2
+    echo "this repo (missing run.sh/flake.nix). Refusing to continue -" >&2
+    echo "writing ~/.dotfiles from a bad path is how issue #9 corrupted it." >&2
+    return 1
+  fi
+}
+
+validate_dir "$DIR" || exit 1
 
 usage() {
   cat <<'EOF'
-Usage: ./run.sh [command] [host] [--no-nix]
+Usage: ./run.sh [command] [host] [--no-nix] [--relink]
 
 With no command at all, ./run.sh behaves like `./run.sh bootstrap`.
 
@@ -59,6 +79,12 @@ COMMANDS
 FLAGS
   --no-nix           Selects the work (brew-only) host explicitly,
                      bypassing both the remembered choice and the menu.
+  --relink           If ~/.dotfiles is already a symlink pointing somewhere
+                     other than this checkout, move it here instead of
+                     refusing. Without this flag, an existing ~/.dotfiles
+                     pointing elsewhere is left untouched. A ~/.dotfiles
+                     that is a real file or directory is always refused,
+                     --relink included - move it by hand first.
 EOF
 }
 
@@ -147,6 +173,62 @@ resolve_host() {
   exit 1
 }
 
+# Points ~/.dotfiles at $target. Creates it when absent - first-run
+# bootstrap on a fresh machine must keep working exactly as it does today.
+# A silent no-op when it already resolves to $target, however that symlink
+# happens to be spelled on disk (relative, trailing slash, hand-restored) -
+# comparing raw `readlink` text against the physical $target would refuse a
+# link that is already correct. When it exists and resolves somewhere else,
+# refuses rather than silently clobbering it, unless $relink is 1 - see
+# issue #9, where an unconditional `ln -sfn` here is what hijacked and then
+# destroyed the live ~/.dotfiles. A ~/.dotfiles that is some OTHER real file
+# or directory is refused, --relink included: --relink means "repoint an
+# existing symlink", and `ln -sfn` against a real directory silently nests a
+# stray symlink inside it and exits 0 - the same blind write issue #9 was
+# about. The resolved-path comparison deliberately runs before that check,
+# so a checkout cloned straight to ~/.dotfiles (DIR == $HOME/.dotfiles, a
+# real directory that already resolves to $target) is the same silent no-op
+# as a correct symlink instead of an unfixable refusal.
+link_dotfiles() {
+  local target="$1" relink="$2"
+  local link="$HOME/.dotfiles"
+
+  if [ ! -e "$link" ] && [ ! -L "$link" ]; then
+    ln -sfn "$target" "$link"
+    return 0
+  fi
+
+  local resolved
+  resolved="$(cd "$link" 2>/dev/null && pwd -P)" || resolved=""
+
+  if [ -n "$resolved" ] && [ "$resolved" = "$target" ]; then
+    return 0
+  fi
+
+  if [ ! -L "$link" ]; then
+    echo "$link already exists and is not a symlink - refusing to touch it." >&2
+    echo "  proposed: $target" >&2
+    echo "Move or remove it by hand, then re-run. --relink only repoints an" >&2
+    echo "existing symlink; it will not clobber a real file or directory." >&2
+    return 1
+  fi
+
+  local current
+  current="$(readlink "$link")"
+
+  if [ "$relink" = 1 ]; then
+    echo "    relinking ~/.dotfiles: '$current' -> '$target'"
+    ln -sfn "$target" "$link"
+    return 0
+  fi
+
+  echo "$link already exists and doesn't point at this checkout - refusing to overwrite it." >&2
+  echo "  current:  $current" >&2
+  echo "  proposed: $target" >&2
+  echo "Pass --relink to move it: ./run.sh bootstrap --relink" >&2
+  return 1
+}
+
 cmd_bootstrap_nix() {
   local host="$1"
 
@@ -161,7 +243,7 @@ cmd_bootstrap_nix() {
   fi
 
   echo "==> 2/4 link repo to ~/.dotfiles"
-  ln -sfn "$DIR" ~/.dotfiles
+  link_dotfiles "$DIR" "$relink"
 
   echo "==> 3/4 username check"
   local real_user
@@ -257,7 +339,7 @@ cmd_rebuild() {
     cmd_bootstrap_no_nix "$HOST"
     return
   fi
-  ln -sfn "$DIR" ~/.dotfiles
+  link_dotfiles "$DIR" "$relink"
   if [ "$HOST" = "home-linux" ]; then
     nix run github:nix-community/home-manager/release-26.05#home-manager -- \
       switch --flake ~/.dotfiles#"$HOST"
@@ -280,10 +362,13 @@ check_gh_auth() {
 # (choose_host, resolve_host, ...) without running the whole CLI.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   no_nix=0
+  relink=0
   args=()
   for arg in "$@"; do
     if [ "$arg" = "--no-nix" ]; then
       no_nix=1
+    elif [ "$arg" = "--relink" ]; then
+      relink=1
     else
       args+=("$arg")
     fi

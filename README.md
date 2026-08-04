@@ -127,10 +127,10 @@ opened for it will clone this repo and run `install.sh` on creation.
 
 ## Tests
 
-- `bash run.test.sh` - host selection logic in `run.sh`, against a mocked `uname`.
+- `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, plus its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`.
 - `sh work/bootstrap.test.sh` - the work host's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
 - `bash install.test.sh` - the Codespaces posture-detection and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/network).
 - `bash install.container-test.sh` - the real Codespaces install (Nix, then both `codespace-personal`/`codespace-work` home-manager profiles) inside a disposable `ubuntu:24.04` container. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or install path (`.github/workflows/install-container-test.yml`).
 - `sh home/.local/bin/herdr-agent-handoff-marker.test.sh` - the herdr tab-marker script, against a mocked `herdr` on a hermetic `PATH`.
 
-None of these touch this machine's real Homebrew, macOS defaults, `~/.claude`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
+None of these touch this machine's real Homebrew, macOS defaults, `~/.claude`, `~/.dotfiles`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
