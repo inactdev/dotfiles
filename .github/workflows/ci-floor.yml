@@ -62,6 +62,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: nixfmt --check
-        run: nix shell nixpkgs#nixfmt --command nixfmt --check $(git ls-files '*.nix')
+        run: git ls-files -z '*.nix' | xargs -0 nix shell nixpkgs#nixfmt --command nixfmt --check
       - name: nix flake check (eval only)
         run: nix flake check --no-build --impure --all-systems
