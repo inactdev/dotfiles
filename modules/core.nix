@@ -121,4 +121,12 @@ in
   # Makes it so that claude and all other LLMs behave the same
   home.file.".claude/CLAUDE.md".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/AGENTS.md";
+  # Linked as a directory, not per-file, so a style added under
+  # home/.claude/output-styles/ is picked up with no config change. Shared
+  # here rather than in desktop.nix/codespace.nix: which styles exist is
+  # discoverability, not a trust or posture decision (unlike
+  # .claude/settings.json, which does vary by host) - every host, including
+  # both codespace postures, should see the same set.
+  home.file.".claude/output-styles".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/output-styles";
 }
