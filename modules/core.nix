@@ -125,8 +125,10 @@ in
   # home/.claude/output-styles/ is picked up with no config change. Shared
   # here rather than in desktop.nix/codespace.nix: which styles exist is
   # discoverability, not a trust or posture decision (unlike
-  # .claude/settings.json, which does vary by host) - every host, including
-  # both codespace postures, should see the same set.
+  # .claude/settings.json, which does vary by host) - every Nix host,
+  # personal-posture codespaces included, should see the same set. The two
+  # --no-nix hosts (work Mac, codespace-work) don't link it at all, same as
+  # they never have.
   home.file.".claude/output-styles".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/output-styles";
 }

@@ -118,7 +118,11 @@
 
       # codespace-personal / codespace-work: GitHub Codespaces containers -
       # applied by install.sh non-interactively (posture picked by its own
-      # detect_posture), never through run.sh's menu (see README.md). Both
+      # detect_posture), never through run.sh's menu (see README.md).
+      # codespace-work is the exception: install.sh's work branch bypasses
+      # Nix entirely for work/codespace-bootstrap.sh, so nothing applies
+      # that output anymore - it's kept (and CI-eval-checked) deliberately,
+      # see README.md's Codespaces section. Both
       # compose modules/core.nix plus the codespace-only delta in
       # modules/codespace.nix - no modules/desktop.nix (no ghostty, no
       # fonts, no git identity, no local-machine Claude settings) and no

@@ -15,7 +15,9 @@ in
 # homeConfigurations."codespace-personal"/"codespace-work") - everything a
 # codespace needs that isn't shared with personal-mac/home-linux, and isn't
 # already excluded simply by never importing modules/desktop.nix or
-# modules/mac.nix. Both codespace postures import this same module; `posture`
+# modules/mac.nix. Both codespace postures import this same module, but only
+# codespace-personal is ever applied - install.sh's work branch bypasses Nix
+# entirely (see flake.nix's codespace comment block and README.md); `posture`
 # (an extraSpecialArg set per flake output, mirroring install.sh's own
 # detect_posture) picks the two things that still differ between them -
 # nothing else does, since work Mac's separate --no-nix path

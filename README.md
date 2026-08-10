@@ -66,7 +66,9 @@ Corporate Macs where Nix isn't allowed use the `work` host instead:
 package set with plain Homebrew and wires up configs with plain shell - no
 Nix, no home-manager. Everything for that path lives under `work/`:
 
-- `work/Brewfile` - the exact formula/cask list for the work host.
+- `work/Brewfile` - the exact formula/cask list for the work host, and the
+  intent Codespaces' work posture mirrors via apt/npm/release binaries
+  (below).
 - `work/bootstrap.sh` - installs Homebrew if missing, runs `brew bundle`,
   symlinks the same `home/.config/*` and `AGENTS.md` files the Nix path
   uses plus ghostty (no wezterm/herdr - see below), links `work/zshrc` and
