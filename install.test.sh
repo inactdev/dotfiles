@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Test suite for install.sh's pure decision logic: personal-vs-work posture
-# detection, and the require_codespaces guard. Sources the real install.sh
-# (see the BASH_SOURCE guard at its tail) and calls its functions directly
-# against a scratch fake-dotfiles git repo, so it never touches Nix, sudo,
-# or any real download. This does NOT exercise the real install (installing
-# Nix, starting nix-daemon, applying the codespace-personal/codespace-work
-# home-manager profile, chsh, nvim plugin sync) - see
+# detection, the require_codespaces guard, and main()'s dispatch to
+# main_personal/main_work (including the proof that the work branch never
+# reaches any Nix function). Sources the real install.sh (see the
+# BASH_SOURCE guard at its tail) and calls its functions directly against a
+# scratch fake-dotfiles git repo, so it never touches Nix, sudo, apt, or
+# any real download. This does NOT exercise either posture's real install
+# (personal: installing Nix, starting nix-daemon, applying the
+# codespace-personal home-manager profile, chsh, nvim plugin sync; work:
+# work/codespace-bootstrap.sh's apt/npm/binary installs) - see
 # install.container-test.sh for the real end-to-end container run that
 # covers that path, for both postures.
 #
@@ -333,11 +336,13 @@ test_existing_backup_is_never_clobbered() {
 }
 
 # --- settings-file content ----------------------------------------------------
-# The posture -> settings-file wiring itself now lives in
-# modules/codespace.nix (see flake.nix's homeConfigurations."codespace-
-# personal"/"codespace-work"), not install.sh, so it's exercised by
-# install.container-test.sh instead of a bash unit test here. What's left
-# to check at this level is just the static file content each posture links.
+# The posture -> settings-file wiring itself no longer lives in install.sh:
+# personal posture gets it from modules/codespace.nix (flake.nix's
+# homeConfigurations."codespace-personal"), work posture from
+# work/codespace-bootstrap.sh's shared install_claude_settings. Both are
+# exercised by install.container-test.sh instead of a bash unit test here.
+# What's left to check at this level is just the static file content each
+# posture links.
 
 test_codespaces_claude_settings_no_hooks_keeps_skip_permissions() {
   jq empty "$SCRIPT_DIR/codespaces/claude-settings.json"
