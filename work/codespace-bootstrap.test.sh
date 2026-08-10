@@ -71,9 +71,18 @@ mock_bin() {
 #!/bin/sh
 echo "apt-get $*" >>"$FIXTURES/apt.log"
 if [ "$1 $2" = "update -y" ]; then
+  count=$(cat "$FIXTURES/apt-update-count" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  echo "$count" >"$FIXTURES/apt-update-count"
   # $FIXTURES/apt-update-fail stands in for a broken source or a
   # network blip - see test_failed_apt_update_does_not_install_from_a_stale_index.
   [ -f "$FIXTURES/apt-update-fail" ] && exit 1
+  # apt-update-fail-second fails only the re-index install_gh forces
+  # after adding its own source, leaving the first (distro-wide) one
+  # successful - see test_failed_gh_reindex_does_not_poison_later_installs.
+  if [ -f "$FIXTURES/apt-update-fail-second" ] && [ "$count" -ge 2 ]; then
+    exit 1
+  fi
   exit 0
 fi
 if [ "$1" = "install" ]; then
@@ -350,6 +359,36 @@ test_failed_apt_update_does_not_install_from_a_stale_index() {
   teardown
 }
 
+# The memoized update status must not spread install_gh's own bad luck:
+# apt refreshes each source independently, so cli.github.com being
+# unreachable during the re-index install_gh forces says nothing about
+# the distro's sources, which the first update already refreshed. gh
+# lands in PENDING; every apt tool ordered after it still installs.
+test_failed_gh_reindex_does_not_poison_later_installs() {
+  setup
+  : >"$FIXTURES/apt-update-fail-second"
+  out=$(run_bootstrap 2>&1)
+  code=$?
+  assert_eq "script still exits 0 when gh's forced re-index fails" "0" "$code"
+  assert_contains "gh reported pending" "$out" "could not install: gh"
+  # The zsh plugins are the anchor for "ordered after gh": they are gated
+  # on dpkg -s rather than command -v, so unlike zsh/python3 they are
+  # never skipped as already-present by whichever OS runs this suite.
+  updates="$(grep -cx 'apt-get update -y' "$FIXTURES/apt.log")"
+  if [ "$updates" -ge 2 ]; then
+    pass_count=$((pass_count + 1))
+    echo "ok - gh's forced re-index really is the update that failed"
+  else
+    fail_count=$((fail_count + 1))
+    echo "FAIL - expected a second apt-get update from install_gh, saw $updates"
+  fi
+  assert_contains "zsh plugins (ordered after gh) still apt-installed" \
+    "$(cat "$FIXTURES/apt.log")" "install -y --no-install-recommends zsh-syntax-highlighting"
+  assert_not_contains "zsh plugins not falsely reported pending" \
+    "$out" "could not install: zsh-autosuggestions"
+  teardown
+}
+
 # The hermetic curl mock can never run the real cargo-dist installer, so
 # this checks the invocation itself: without RUFF_NO_MODIFY_PATH the
 # installer appends to the first existing ~/.zshrc - which, from the
@@ -515,6 +554,7 @@ test_local_bin_tools_are_detected_on_a_rerun
 test_gh_apt_source_is_indexed_before_installing_gh
 test_failed_gh_keyring_download_does_not_publish_an_apt_source
 test_failed_apt_update_does_not_install_from_a_stale_index
+test_failed_gh_reindex_does_not_poison_later_installs
 test_ruff_installer_never_edits_shell_rc_files
 test_no_git_clone_in_source
 test_symlinks_point_into_repo_no_ghostty

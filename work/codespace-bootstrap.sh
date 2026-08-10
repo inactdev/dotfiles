@@ -55,9 +55,11 @@ PENDING=()
 # the first gets the same exit status back rather than a bare 0, so an
 # `apt-get update` that actually failed keeps propagating instead of
 # letting each apt_install proceed against a stale index. APT_UPDATED is
-# set before the update runs, so a failure is never retried once per tool;
+# set before the update runs, so a failure is never retried once per tool.
 # install_gh deliberately resets it to force one fresh re-index after
-# adding its own source.
+# adding its own source, and scopes that re-index's failure back out
+# again - apt refreshes each source independently, so an unreachable
+# cli.github.com must not mark every later, unrelated install failed too.
 APT_UPDATED=0
 APT_UPDATE_STATUS=0
 apt_update_once() {
@@ -146,6 +148,7 @@ install_zsh_plugin_packages() {
 # --- gh: official apt repo, no clone ------------------------------------
 
 install_gh() {
+  local prior_update_status status
   # Chained, for the same reason install_neovim/install_stylua are: this
   # runs as an `if` condition inside install_binary_tool, which suspends
   # -e for its whole dynamic extent. Unchained, a failed keyring download
@@ -161,8 +164,18 @@ install_gh() {
   # predates the source just written - without forcing a re-index, apt
   # silently installs the distro's own much older gh (Ubuntu noble ships
   # one), or fails outright on an image that has none.
+  prior_update_status="$APT_UPDATE_STATUS"
   APT_UPDATED=0
   apt_install gh
+  status=$?
+  # Whether the forced re-index worked only decides gh's own fate: if the
+  # earlier update had already succeeded, the distro's own sources are
+  # still freshly indexed, so leave the memoized status usable for every
+  # tool after this one.
+  if [ "$prior_update_status" = 0 ]; then
+    APT_UPDATE_STATUS=0
+  fi
+  return "$status"
 }
 
 # --- npm-packaged tools (Node already ships on the universal image) -----
