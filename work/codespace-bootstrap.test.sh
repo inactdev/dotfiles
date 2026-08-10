@@ -139,11 +139,11 @@ echo "sudo $*" >>"$FIXTURES/sudo.log"
 if [ "$1" = "chsh" ]; then
   exit 0
 fi
-# chmod is mocked rather than exec'd: install_gh chmods a path under
-# /usr/share/keyrings that must never exist on a dev machine, and now
-# that install_gh is an && chain that real chmod's failure would be
+# install/chmod are mocked rather than exec'd: install_gh writes a path
+# under /usr/share/keyrings that must never exist on a dev machine, and
+# now that install_gh is an && chain a real failure there would be
 # indistinguishable from a genuinely failed install.
-if [ "$1" = "chmod" ]; then
+if [ "$1" = "chmod" ] || [ "$1" = "install" ]; then
   exit 0
 fi
 if [ "$1" = "dd" ] || [ "$1" = "tee" ]; then
@@ -379,6 +379,12 @@ test_failed_gh_keyring_download_does_not_publish_an_apt_source() {
     "$(cat "$FIXTURES/apt.log")" "install -y --no-install-recommends gh"
   assert_not_contains "no apt source published for an unwritten keyring" \
     "$(cat "$FIXTURES/sudo.log")" "tee /etc/apt/sources.list.d/github-cli.list"
+  # The download must not have touched the real keyring path at all: a
+  # pipeline into `sudo dd of=<keyring>` truncates it before curl's status
+  # is known, which on a re-run leaves the already-published apt source
+  # pointing at an empty keyring and breaks apt-get update permanently.
+  assert_not_contains "keyring never written after a failed fetch" \
+    "$(cat "$FIXTURES/sudo.log")" "/usr/share/keyrings/githubcli-archive-keyring.gpg"
   teardown
 }
 

@@ -105,6 +105,11 @@ install_binary_tool() {
 
 install_git() { apt_install git; }
 install_jq() { apt_install jq; }
+# Not a Brewfile entry, but install_gh/install_neovim/install_stylua/
+# install_ruff/install_starship all shell out to it - the universal
+# Codespaces image always ships it, so this only matters on a bare Ubuntu
+# base, where without it those five land in PENDING with no explanation.
+install_curl() { apt_install curl ca-certificates; }
 install_ripgrep() { apt_install ripgrep; }
 install_direnv() { apt_install direnv; }
 install_zsh() { apt_install zsh; }
@@ -148,18 +153,26 @@ install_zsh_plugin_packages() {
 # --- gh: official apt repo, no clone ------------------------------------
 
 install_gh() {
-  local prior_update_status status
-  # Chained, for the same reason install_neovim/install_stylua are: this
-  # runs as an `if` condition inside install_binary_tool, which suspends
-  # -e for its whole dynamic extent. Unchained, a failed keyring download
-  # would still publish an apt source signed by a zero-byte keyring, and
-  # every later `apt-get update` on the machine - this script's own
-  # re-runs included - would fail with an unsigned-repository error.
-  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
-    sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg &&
-    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg &&
+  local tmp prior_update_status status keyring_status
+  tmp="$(mktemp -d)"
+  # Downloaded to a temp file and only then installed to its real path,
+  # same shape as install_neovim/install_stylua: piping curl straight into
+  # `sudo dd of=<keyring>` truncates the existing keyring the moment the
+  # pipeline starts, so a failed download on a re-run zeroes a keyring the
+  # already-published apt source still references - and every later
+  # `apt-get update` on the machine fails with an unsigned-repository
+  # error. Chained with && for the same reason those two are: this runs as
+  # an `if` condition inside install_binary_tool, which suspends -e for its
+  # whole dynamic extent, so nothing here aborts on its own.
+  curl -fsSL -o "$tmp/githubcli-archive-keyring.gpg" \
+    https://cli.github.com/packages/githubcli-archive-keyring.gpg &&
+    sudo install -m 0644 "$tmp/githubcli-archive-keyring.gpg" \
+      /usr/share/keyrings/githubcli-archive-keyring.gpg &&
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
-    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null || return 1
+    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  keyring_status=$?
+  rm -rf "$tmp"
+  [ "$keyring_status" = 0 ] || return 1
   # apt_update_once already ran for the earlier apt tools, so the index
   # predates the source just written - without forcing a re-index, apt
   # silently installs the distro's own much older gh (Ubuntu noble ships
@@ -264,10 +277,13 @@ install_ruff() {
 # the interactive confirmation prompt, required for a non-interactive
 # codespace setup.
 install_starship() {
-  curl -sS https://starship.rs/install.sh | sh -s -- --yes
+  curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 }
 
 install_apt_tools() {
+  # curl first: install_gh below and every release-binary install depend
+  # on it.
+  install_binary_tool curl curl install_curl
   install_binary_tool git git install_git
   install_binary_tool jq jq install_jq
   install_binary_tool rg ripgrep install_ripgrep
