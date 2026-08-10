@@ -252,7 +252,7 @@ nvim_config_is_managed() {
 # Present on both postures - see work/Brewfile (work) and modules/core.nix
 # (personal, via flake.nix's homeConfigurations.codespace-personal); the
 # two package lists were built to match on purpose.
-COMMON_TOOLS="nvim rg fd jq starship stylua prettierd ruff direnv gh zsh git node go python3"
+COMMON_TOOLS="nvim rg fd jq starship stylua prettierd ruff direnv gh zsh git node go python3 claude"
 
 for user in codespace-personal codespace-work; do
   for tool in $COMMON_TOOLS; do
@@ -293,16 +293,44 @@ assert "work install output lists deliberately-skipped macOS-only tools" \
 assert "work install output states neovim plugins are not pre-synced" \
   grep -q "Deliberately not synced: neovim plugins" "$WORK_INSTALL_LOG"
 
-echo "==> re-running install.sh (work posture) to check idempotency"
-assert "install.sh exits 0 on a second work-posture run" \
-  docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
-  bash -c 'cd ~/dotfiles-src && bash install.sh >/tmp/second-run.log 2>&1'
-# shellcheck disable=SC2016 # deliberately unexpanded - a template string
-# expanded by the *remote* shell docker exec runs.
-assert "second run creates no new .pre-dotfiles-backup files (symlinks already pointed at the repo)" \
+# Captured *before* the second run, not asserted as empty afterward: the
+# first run above already legitimately created one real backup
+# (~/.zshrc pre-existed as a real file in this fresh user account before
+# install.sh ever ran, so link_with_backup correctly moved it aside once)
+# - that backup is expected to still be there. What idempotency actually
+# means here is that the *second* run doesn't add any new ones on top of
+# it, not that zero backups exist.
+backup_files() {
   docker exec -u codespace-work "$CONTAINER" bash -c \
-  '[ -z "$(find "$HOME" -maxdepth 3 -name "*.pre-dotfiles-backup")" ]'
-assert "second run still leaves nix absent" nix_directory_absent
+    'find "$HOME" -maxdepth 3 -name "*.pre-dotfiles-backup" 2>/dev/null | sort'
+}
+BACKUP_FILES_BEFORE_SECOND_RUN="$(backup_files)"
+
+echo "==> re-running install.sh (work posture) to check idempotency"
+SECOND_RUN_LOG="$BUNDLE_DIR/work-install-second-run.log"
+docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
+  bash -c 'cd ~/dotfiles-src && bash install.sh' >"$SECOND_RUN_LOG" 2>&1
+SECOND_RUN_STATUS=$?
+cat "$SECOND_RUN_LOG"
+assert "install.sh exits 0 on a second work-posture run" [ "$SECOND_RUN_STATUS" -eq 0 ]
+
+second_run_creates_no_new_backups() {
+  [ "$(backup_files)" = "$BACKUP_FILES_BEFORE_SECOND_RUN" ]
+}
+assert "second run creates no new .pre-dotfiles-backup files beyond the first run's" \
+  second_run_creates_no_new_backups
+
+# Container-wide /nix presence isn't a meaningful check at this point in
+# the suite (personal posture has already run by now and may have left
+# /nix behind win or lose - see the Apple Silicon/QEMU note below) - what
+# a second work-posture run must prove instead is that ITS OWN code path
+# still never attempts a Nix install, independent of what else already
+# exists in the container.
+second_run_never_mentions_installing_nix() {
+  ! grep -q "installing Nix" "$SECOND_RUN_LOG"
+}
+assert "second work-posture run's own output never mentions installing Nix" \
+  second_run_never_mentions_installing_nix
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

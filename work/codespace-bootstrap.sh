@@ -136,14 +136,19 @@ install_gh() {
 
 # --- npm-packaged tools (Node already ships on the universal image) -----
 
+# --prefix "$HOME/.local": npm's default global prefix is root-owned when
+# Node came from apt (unlike the universal image's own nvm-managed Node,
+# whose prefix is already user-owned) - a plain `npm install -g` here
+# fails with EACCES. ~/.local/bin is already on PATH (work/zshrc), so
+# this needs no separate npm config change.
 install_prettierd() {
   command -v npm >/dev/null 2>&1 || return 1
-  npm install -g @fsouza/prettierd
+  npm install -g --prefix "$HOME/.local" @fsouza/prettierd
 }
 
 install_claude_code() {
   command -v npm >/dev/null 2>&1 || return 1
-  npm install -g @anthropic-ai/claude-code
+  npm install -g --prefix "$HOME/.local" @anthropic-ai/claude-code
 }
 
 # --- direct release-binary downloads (packaged versions are too old / --
