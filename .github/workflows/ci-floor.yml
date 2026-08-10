@@ -16,8 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Every path is listed explicitly rather than by a broad glob so a new
+      # script can't be silently skipped: `work/*.sh` and `home/.local/bin/*`
+      # already sweep in those directories' `.test.sh` suites, but the
+      # root-level ones each have to be named (`run.sh` does not match
+      # `run.test.sh`, nor `install.sh` the two `install.*-test.sh`).
       - name: shellcheck
-        run: shellcheck run.sh work/*.sh install.sh home/.local/bin/*
+        run: >-
+          shellcheck run.sh run.test.sh install.sh install.test.sh
+          install.container-test.sh work/*.sh home/.local/bin/*
 
   # run.test.sh, install.test.sh, and work/codespace-bootstrap.test.sh are
   # pure bash logic tests (host selection, posture detection, the
