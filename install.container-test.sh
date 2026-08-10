@@ -74,7 +74,8 @@ docker exec "$CONTAINER" bash -c '
 
 # git bundle, not a plain COPY/cp: this repo is normally checked out as a
 # linked worktree whose .git is a pointer file to an absolute host path
-# that does not exist inside the container - see AGENTS.md.
+# that does not exist inside the container. It bundles HEAD, not the
+# working tree, so a local run only exercises committed changes.
 echo "==> bundling repo into the container"
 git -C "$SCRIPT_DIR" bundle create "$BUNDLE" HEAD >/dev/null
 ORIGIN_URL="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "https://github.com/inactdev/dotfiles.git")"
@@ -346,7 +347,8 @@ assert "second run creates no new .pre-dotfiles-backup files beyond the first ru
 
 # Container-wide /nix presence isn't a meaningful check at this point in
 # the suite (personal posture has already run by now and may have left
-# /nix behind win or lose - see the Apple Silicon/QEMU note below) - what
+# /nix behind win or lose; see AGENTS.md for the Apple Silicon/QEMU case
+# where it loses) - what
 # a second work-posture run must prove instead is that ITS OWN code path
 # still never attempts a Nix install, independent of what else already
 # exists in the container.
