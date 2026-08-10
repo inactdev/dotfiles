@@ -195,6 +195,25 @@ tool_absent() {
   ! tool_on_path "$1" "$2"
 }
 
+# On-PATH alone is not evidence for the personal posture: work posture ran
+# first in this same container and its apt installs are system-wide, so
+# rg/jq/direnv/gh/zsh/git/node/go/python3 (and starship, in /usr/local/bin)
+# would resolve for codespace-personal whether or not the home-manager
+# profile provided anything. Resolving into /nix/store is what actually
+# proves the profile did.
+tool_resolves_into_nix_store() {
+  local user="$1" tool="$2" resolved
+  resolved="$(docker exec -u "$user" "$CONTAINER" bash -c \
+    "$env_prefix readlink -f \"\$(command -v $tool)\"" 2>/dev/null)"
+  case "$resolved" in
+    /nix/store/*) return 0 ;;
+    *)
+      echo "  $tool resolved to: ${resolved:-<not found>}" >&2
+      return 1
+      ;;
+  esac
+}
+
 ghostty_absent() {
   local user="$1"
   ! docker exec -u "$user" "$CONTAINER" bash -c "$env_prefix command -v ghostty" >/dev/null 2>&1
@@ -269,6 +288,11 @@ done
 assert "codespace-personal: fzf on PATH" tool_on_path codespace-personal fzf
 assert "codespace-work: fzf absent (excluded, matching the Mac work host)" tool_absent codespace-work fzf
 
+for tool in $COMMON_TOOLS fzf; do
+  assert "codespace-personal: $tool comes from the home-manager profile, not work's apt installs" \
+    tool_resolves_into_nix_store codespace-personal "$tool"
+done
+
 assert "codespace-personal: ~/.claude/settings.json links codespaces/claude-settings.json" \
   claude_settings_target_matches codespace-personal "codespaces/claude-settings.json"
 assert "codespace-work: ~/.claude/settings.json links work/claude-settings.json" \
@@ -293,13 +317,13 @@ assert "work install output lists deliberately-skipped macOS-only tools" \
 assert "work install output states neovim plugins are not pre-synced" \
   grep -q "Deliberately not synced: neovim plugins" "$WORK_INSTALL_LOG"
 
-# Captured *before* the second run, not asserted as empty afterward: the
-# first run above already legitimately created one real backup
-# (~/.zshrc pre-existed as a real file in this fresh user account before
-# install.sh ever ran, so link_with_backup correctly moved it aside once)
-# - that backup is expected to still be there. What idempotency actually
-# means here is that the *second* run doesn't add any new ones on top of
-# it, not that zero backups exist.
+# Captured *before* the second run rather than asserted empty: what
+# idempotency means here is that the second run adds no new backups on
+# top of whatever the first legitimately made, not that zero exist. This
+# user account starts with no ~/.zshrc at all (useradd -m/skel ships
+# .bashrc/.profile/.bash_logout, not .zshrc), so the expected count today
+# is zero - but a base image that does ship one would produce exactly one
+# backup here, and that would still be correct.
 backup_files() {
   docker exec -u codespace-work "$CONTAINER" bash -c \
     'find "$HOME" -maxdepth 3 -name "*.pre-dotfiles-backup" 2>/dev/null | sort'
@@ -331,6 +355,26 @@ second_run_never_mentions_installing_nix() {
 }
 assert "second work-posture run's own output never mentions installing Nix" \
   second_run_never_mentions_installing_nix
+
+# The checkout is the source of every symlink this posture installs, so
+# nothing the install runs - including third-party installers it pipes to
+# sh - may write back through one of those symlinks into it. ~/.zshrc ->
+# work/zshrc is the live case: an rc-file-appending installer dirties the
+# user's own dotfiles clone, and only shows up from the second run on,
+# once the symlink exists.
+work_checkout_is_clean() {
+  local dirty
+  dirty="$(docker exec -u codespace-work "$CONTAINER" bash -c \
+    'cd ~/dotfiles-src && git status --porcelain')"
+  if [ -z "$dirty" ]; then
+    return 0
+  fi
+  echo "  install.sh wrote back into the checkout:" >&2
+  echo "$dirty" >&2
+  return 1
+}
+assert "work posture never writes back into its own checkout (e.g. through the ~/.zshrc symlink)" \
+  work_checkout_is_clean
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

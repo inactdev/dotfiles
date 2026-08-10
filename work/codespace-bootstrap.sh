@@ -34,6 +34,16 @@ CODESPACE_BOOTSTRAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck disable=SC1091
 source "$CODESPACE_BOOTSTRAP_DIR/bootstrap.sh"
 
+# Several tools below install into ~/.local/bin (nvim, stylua, ruff, the
+# fd symlink, both npm tools), but this script does not run under the
+# user's interactive shell - a Codespaces setup-script run starts from the
+# image's default PATH, so work/zshrc's own export is not in effect here.
+# Without this, every `command -v` gate would miss a previous run's work
+# and re-download all of them on each re-run. It also stops third-party
+# installers that offer to edit shell rc files from deciding they need to
+# (see install_ruff).
+export PATH="$HOME/.local/bin:$PATH"
+
 # INSTALLED/SKIPPED_PRESENT/PENDING have no Mac equivalent - `brew bundle`
 # either fully succeeds or the whole Mac bootstrap aborts, so it has no
 # per-tool state to track the way this apt/npm/binary path does.
@@ -53,8 +63,8 @@ apt_update_once() {
 # doesn't bundle npm the way the universal image's own Node (via nvm)
 # does, so that fallback needs two packages installed together.
 apt_install() {
-  apt_update_once
-  sudo apt-get install -y --no-install-recommends "$@"
+  apt_update_once &&
+    sudo apt-get install -y --no-install-recommends "$@"
 }
 
 # install_binary_tool CLI_NAME LABEL INSTALL_FN
@@ -126,11 +136,22 @@ install_zsh_plugin_packages() {
 # --- gh: official apt repo, no clone ------------------------------------
 
 install_gh() {
+  # Chained, for the same reason install_neovim/install_stylua are: this
+  # runs as an `if` condition inside install_binary_tool, which suspends
+  # -e for its whole dynamic extent. Unchained, a failed keyring download
+  # would still publish an apt source signed by a zero-byte keyring, and
+  # every later `apt-get update` on the machine - this script's own
+  # re-runs included - would fail with an unsigned-repository error.
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
-    sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-  sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
-    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+    sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg &&
+    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg &&
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
+    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null || return 1
+  # apt_update_once already ran for the earlier apt tools, so the index
+  # predates the source just written - without forcing a re-index, apt
+  # silently installs the distro's own much older gh (Ubuntu noble ships
+  # one), or fails outright on an image that has none.
+  APT_UPDATED=0
   apt_install gh
 }
 
@@ -139,8 +160,9 @@ install_gh() {
 # --prefix "$HOME/.local": npm's default global prefix is root-owned when
 # Node came from apt (unlike the universal image's own nvm-managed Node,
 # whose prefix is already user-owned) - a plain `npm install -g` here
-# fails with EACCES. ~/.local/bin is already on PATH (work/zshrc), so
-# this needs no separate npm config change.
+# fails with EACCES. ~/.local/bin is on PATH both here (the export at the
+# top of this file) and in the user's shell (work/zshrc), so this needs
+# no separate npm config change.
 install_prettierd() {
   command -v npm >/dev/null 2>&1 || return 1
   npm install -g --prefix "$HOME/.local" @fsouza/prettierd
@@ -201,8 +223,17 @@ install_stylua() {
 # Official standalone installer - downloads a prebuilt binary from GitHub
 # Releases, same as the ruff/starship cases below (see
 # https://docs.astral.sh/ruff/installation/). Not a git clone.
+#
+# RUFF_NO_MODIFY_PATH=1: left to itself the cargo-dist installer appends
+# `. "$HOME/.local/bin/env"` to the first of ~/.zshrc/~/.zshenv that
+# exists - and after the first bootstrap ~/.zshrc is a symlink to this
+# repo's tracked work/zshrc, so the append would write straight through
+# into the checkout (and, if ever committed, onto the Mac work host too).
+# On a first run it instead *creates* a ~/.zshrc that install_zshrc then
+# has to back up for no reason. PATH is already handled by the export at
+# the top of this file and by work/zshrc, so nothing is lost.
 install_ruff() {
-  curl -LsSf https://astral.sh/ruff/install.sh | sh
+  curl -LsSf https://astral.sh/ruff/install.sh | RUFF_NO_MODIFY_PATH=1 sh
 }
 
 # Official installer - downloads a prebuilt binary from GitHub Releases
@@ -297,7 +328,16 @@ print_summary() {
     if [ "${#PENDING[@]}" -gt 0 ]; then
       printf '  - could not install: %s\n' "${PENDING[@]}"
     fi
-    [ -n "$git_gh_pending" ] && printf '%s\n' "$git_gh_pending"
+    # if/fi, not a bare `[ ... ] && ...`: this is the last command of
+    # print_summary, which is the last command of main, so a false test
+    # here would become the whole script's exit status and fail the
+    # codespace setup over a partial-but-reported install - the exact
+    # pitfall AGENTS.md documents. Reachable whenever a download failed
+    # but git identity and gh auth are both fine, the normal state in a
+    # real work codespace.
+    if [ -n "$git_gh_pending" ]; then
+      printf '%s\n' "$git_gh_pending"
+    fi
   else
     echo "Everything applied cleanly."
   fi

@@ -127,19 +127,37 @@ echo "sudo $*" >>"$FIXTURES/sudo.log"
 if [ "$1" = "chsh" ]; then
   exit 0
 fi
+# chmod is mocked rather than exec'd: install_gh chmods a path under
+# /usr/share/keyrings that must never exist on a dev machine, and now
+# that install_gh is an && chain that real chmod's failure would be
+# indistinguishable from a genuinely failed install.
+if [ "$1" = "chmod" ]; then
+  exit 0
+fi
 if [ "$1" = "dd" ] || [ "$1" = "tee" ]; then
   cat >/dev/null
   exit 0
 fi
 exec "$@"
 MOCK
-  # No network in this hermetic run: every direct-binary/npm installer
-  # (neovim, stylua, ruff, starship, claude-code, prettierd) must fail
-  # gracefully and land in the PENDING summary, not abort the script -
-  # see test_network_dependent_installs_are_pending_not_fatal.
+  # No network in this hermetic run for the release-binary/npm installers
+  # (neovim, stylua, ruff, starship, claude-code, prettierd): they must
+  # fail gracefully and land in the PENDING summary, not abort the script
+  # - see test_network_dependent_installs_are_pending_not_fatal. The gh
+  # keyring fetch is the one exception, so install_gh's apt path stays
+  # reachable; $FIXTURES/curl-fail-all makes even that one fail, for
+  # test_failed_gh_keyring_download_does_not_publish_an_apt_source.
   cat >"$dir/curl" <<'MOCK'
 #!/bin/sh
 echo "curl $*" >>"$FIXTURES/curl.log"
+if [ ! -f "$FIXTURES/curl-fail-all" ]; then
+  case "$*" in
+    *cli.github.com*)
+      echo "fake-keyring"
+      exit 0
+      ;;
+  esac
+fi
 exit 1
 MOCK
   cat >"$dir/npm" <<'MOCK'
@@ -237,6 +255,88 @@ test_network_dependent_installs_are_pending_not_fatal() {
   assert_eq "script still exits 0 when downloads fail" "0" "$code"
   assert_contains "neovim reported pending" "$out" "could not install: neovim"
   assert_contains "summary flags still-needs-attention" "$out" "Still needs attention:"
+  teardown
+}
+
+# The pending-summary branch must not become the script's exit status.
+# Every other test here leaves gh unauthenticated, which keeps
+# print_git_gh_pending's output non-empty and masks this entirely - the
+# state that actually matters is the normal one in a real work codespace:
+# git identity and gh auth both fine, one download failed.
+test_partial_failure_with_working_git_and_gh_still_exits_zero() {
+  setup
+  printf '#!/bin/sh\nexit 0\n' >"$MOCK_DIR/gh"
+  chmod +x "$MOCK_DIR/gh"
+  HOME="$HOME" git config --global user.name "Work User"
+  HOME="$HOME" git config --global user.email "work.user@work.example"
+  out=$(run_bootstrap 2>&1)
+  code=$?
+  assert_eq "script exits 0 when downloads failed but git/gh are fine" "0" "$code"
+  assert_contains "downloads still reported pending" "$out" "could not install: neovim"
+  assert_not_contains "gh login not flagged" "$out" "GitHub login"
+  assert_not_contains "git identity not flagged" "$out" "git identity: run git config"
+  teardown
+}
+
+# ~/.local/bin has to be on PATH for this script's own `command -v` gates,
+# not just the user's interactive shell (work/zshrc) - otherwise every
+# tool it installs there is invisible to the next run and gets
+# re-downloaded. fd is the one such tool the hermetic mocks can actually
+# produce (its symlink needs no network).
+test_local_bin_tools_are_detected_on_a_rerun() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  : >"$FIXTURES/apt.log"
+  out=$(run_bootstrap 2>&1) || true
+  assert_not_contains "second run does not re-apt-install fd" "$(cat "$FIXTURES/apt.log")" "fd-find"
+  assert_contains "second run reports fd already present" "$out" "fd already present"
+  teardown
+}
+
+# The GitHub CLI apt source is added after apt_update_once has already
+# run for the earlier tools, so install_gh has to force a re-index or the
+# source it just wrote is never in apt's index at all.
+test_gh_apt_source_is_indexed_before_installing_gh() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  assert_contains "github-cli apt source written" "$(cat "$FIXTURES/sudo.log")" \
+    "tee /etc/apt/sources.list.d/github-cli.list"
+  updates=$(grep -c 'update -y' "$FIXTURES/apt.log" || true)
+  if [ "$updates" -ge 2 ]; then
+    pass_count=$((pass_count + 1))
+    echo "ok - apt-get update re-runs after the github-cli source is added"
+  else
+    fail_count=$((fail_count + 1))
+    echo "FAIL - apt-get update ran $updates time(s); the github-cli source is never indexed"
+  fi
+  teardown
+}
+
+# install_binary_tool calls install_gh as an `if` condition, which
+# suspends errexit for the whole call - so the keyring download failing
+# must be caught explicitly, or the script publishes an apt source signed
+# by a keyring that was never written and breaks apt for good.
+test_failed_gh_keyring_download_does_not_publish_an_apt_source() {
+  setup
+  : >"$FIXTURES/curl-fail-all"
+  out=$(run_bootstrap 2>&1) || true
+  assert_contains "gh reported pending" "$out" "could not install: gh"
+  assert_not_contains "gh never apt-installed after a failed keyring fetch" \
+    "$(cat "$FIXTURES/apt.log")" "install -y --no-install-recommends gh"
+  assert_not_contains "no apt source published for an unwritten keyring" \
+    "$(cat "$FIXTURES/sudo.log")" "tee /etc/apt/sources.list.d/github-cli.list"
+  teardown
+}
+
+# The hermetic curl mock can never run the real cargo-dist installer, so
+# this checks the invocation itself: without RUFF_NO_MODIFY_PATH the
+# installer appends to the first existing ~/.zshrc - which, from the
+# second run on, is a symlink into this repo's tracked work/zshrc.
+test_ruff_installer_never_edits_shell_rc_files() {
+  setup
+  assert_contains "ruff installer invoked with RUFF_NO_MODIFY_PATH=1" \
+    "$(grep -v '^[[:space:]]*#' "$SCRIPT" | grep 'astral.sh/ruff')" \
+    "RUFF_NO_MODIFY_PATH=1"
   teardown
 }
 
@@ -388,6 +488,11 @@ test_codespace_bootstrap_does_not_redefine_shared_functions() {
 test_apt_tools_installed_when_missing
 test_already_present_tools_are_not_reinstalled
 test_network_dependent_installs_are_pending_not_fatal
+test_partial_failure_with_working_git_and_gh_still_exits_zero
+test_local_bin_tools_are_detected_on_a_rerun
+test_gh_apt_source_is_indexed_before_installing_gh
+test_failed_gh_keyring_download_does_not_publish_an_apt_source
+test_ruff_installer_never_edits_shell_rc_files
 test_no_git_clone_in_source
 test_symlinks_point_into_repo_no_ghostty
 test_zshrc_and_claude_settings_linked

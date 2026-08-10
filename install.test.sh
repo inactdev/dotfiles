@@ -353,7 +353,7 @@ test_no_username_hardcoded_in_source() {
   if grep -RIn --exclude='*.test.sh' -e '/Users/inactdev' -e 'inactdev' \
     "$SCRIPT" "$SCRIPT_DIR/codespaces" \
     "$SCRIPT_DIR/modules/core.nix" "$SCRIPT_DIR/modules/codespace.nix" \
-    "$SCRIPT_DIR/work/codespace-bootstrap.sh" >"$hits" 2>/dev/null; then
+    "$SCRIPT_DIR/work/codespace-bootstrap.sh" "$SCRIPT_DIR/work/zshrc" >"$hits" 2>/dev/null; then
     fail_count=$((fail_count + 1))
     echo "FAIL - codespaces-host code hard-codes the personal username:"
     cat "$hits"
