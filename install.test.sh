@@ -155,6 +155,106 @@ test_require_codespaces_fails_outside_a_codespace() {
   teardown
 }
 
+# --- main() posture dispatch ---------------------------------------------------
+# The whole point of this change: work posture must never reach Nix. Two
+# angles, both against the real install.sh (never a rewritten copy):
+# main() picks main_work (not main_personal) for a work-posture
+# combination, and main_work itself - called directly - never calls
+# install_nix/start_nix_daemon/apply_home_manager_profile/
+# sync_neovim_plugins, only ever delegates to work/codespace-bootstrap.sh.
+# See install.container-test.sh for the real end-to-end proof (no Nix
+# binary present, nothing cloned) inside an actual container.
+
+test_main_dispatches_work_posture_to_main_work() {
+  setup
+  out=$(
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    main_personal() { echo "CALLED main_personal"; }
+    main_work() { echo "CALLED main_work"; }
+    require_codespaces() { :; }
+    detect_posture() { echo "work"; }
+    main
+  )
+  assert_contains "work posture calls main_work" "$out" "CALLED main_work"
+  case "$out" in
+    *CALLED\ main_personal*)
+      fail_count=$((fail_count + 1))
+      printf 'FAIL - work posture must not call main_personal\n  actual: %s\n' "$out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      printf 'ok - work posture does not call main_personal\n'
+      ;;
+  esac
+  teardown
+}
+
+test_main_dispatches_personal_posture_to_main_personal() {
+  setup
+  out=$(
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    main_personal() { echo "CALLED main_personal"; }
+    main_work() { echo "CALLED main_work"; }
+    require_codespaces() { :; }
+    detect_posture() { echo "personal"; }
+    main
+  )
+  assert_contains "personal posture calls main_personal" "$out" "CALLED main_personal"
+  case "$out" in
+    *CALLED\ main_work*)
+      fail_count=$((fail_count + 1))
+      printf 'FAIL - personal posture must not call main_work\n  actual: %s\n' "$out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      printf 'ok - personal posture does not call main_work\n'
+      ;;
+  esac
+  teardown
+}
+
+test_main_work_never_touches_nix() {
+  setup
+  FAKE_REPO="$TMP/fake-repo"
+  FAKE_LOG="$TMP/codespace-bootstrap.log"
+  mkdir -p "$FAKE_REPO/work"
+  cat >"$FAKE_REPO/work/codespace-bootstrap.sh" <<STUB
+#!/usr/bin/env bash
+echo "called with: \$*" > "$FAKE_LOG"
+STUB
+  chmod +x "$FAKE_REPO/work/codespace-bootstrap.sh"
+
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    install_nix() {
+      echo "CALLED install_nix" >&2
+      exit 1
+    }
+    start_nix_daemon() {
+      echo "CALLED start_nix_daemon" >&2
+      exit 1
+    }
+    apply_home_manager_profile() {
+      echo "CALLED apply_home_manager_profile" >&2
+      exit 1
+    }
+    sync_neovim_plugins() {
+      echo "CALLED sync_neovim_plugins" >&2
+      exit 1
+    }
+    SCRIPT_DIR="$FAKE_REPO"
+    main_work
+  )
+  code=$?
+  assert_eq "main_work exits 0 without touching any Nix function" "0" "$code"
+  assert_eq "main_work delegates to work/codespace-bootstrap.sh with the repo dir" \
+    "called with: $FAKE_REPO" "$(cat "$FAKE_LOG" 2>/dev/null)"
+  teardown
+}
+
 # --- backup_legacy_dotfile_symlinks -------------------------------------------
 # home-manager's -b only backs up regular files - an existing symlink at a
 # managed path aborts the activation - so install.sh moves legacy symlinks
@@ -246,12 +346,14 @@ test_work_claude_settings_no_hooks_no_skip_permissions() {
 test_no_username_hardcoded_in_source() {
   hits=$(mktemp)
   # Every file a codespace host actually gets: install.sh, the personal
-  # settings file it links, and both modules the codespace-* flake outputs
-  # compose (modules/core.nix is where home.username = user lands, and is
-  # where the git identity now in modules/desktop.nix used to live).
+  # settings file it links, both modules the codespace-personal flake
+  # output composes (modules/core.nix is where home.username = user
+  # lands, and is where the git identity now in modules/desktop.nix used
+  # to live), and the codespace-work no-nix path's own installer/zshrc.
   if grep -RIn --exclude='*.test.sh' -e '/Users/inactdev' -e 'inactdev' \
     "$SCRIPT" "$SCRIPT_DIR/codespaces" \
-    "$SCRIPT_DIR/modules/core.nix" "$SCRIPT_DIR/modules/codespace.nix" >"$hits" 2>/dev/null; then
+    "$SCRIPT_DIR/modules/core.nix" "$SCRIPT_DIR/modules/codespace.nix" \
+    "$SCRIPT_DIR/work/codespace-bootstrap.sh" >"$hits" 2>/dev/null; then
     fail_count=$((fail_count + 1))
     echo "FAIL - codespaces-host code hard-codes the personal username:"
     cat "$hits"
@@ -270,6 +372,9 @@ test_different_owner_is_work
 test_missing_github_repository_defaults_to_work
 test_no_origin_remote_defaults_to_work
 test_require_codespaces_fails_outside_a_codespace
+test_main_dispatches_work_posture_to_main_work
+test_main_dispatches_personal_posture_to_main_personal
+test_main_work_never_touches_nix
 test_legacy_symlink_is_moved_to_hm_backup
 test_regular_file_is_left_for_home_manager_b_flag
 test_nix_store_symlink_is_left_alone

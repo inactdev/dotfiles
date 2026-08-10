@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Layer 1 container rehearsal for install.sh's real Codespaces path: runs
-# the actual install (Nix, then home-manager switch for both
-# codespace-personal and codespace-work) inside a fresh, disposable
-# ubuntu:24.04 container standing in for a Codespaces machine - amd64,
-# matching both real Codespaces machines and the GitHub Actions runners
-# this is wired to run on (see .github/workflows/install-container-test.yml).
+# the actual install - Nix + home-manager for codespace-personal, plain
+# apt/npm/direct-binary for codespace-work (work/codespace-bootstrap.sh) -
+# inside a fresh, disposable ubuntu:24.04 container standing in for a
+# Codespaces machine - amd64, matching both real Codespaces machines and
+# the GitHub Actions runners this is wired to run on (see
+# .github/workflows/install-container-test.yml).
 #
 # Complements install.test.sh, which only covers the pure bash decision
-# logic (detect_posture, require_codespaces) without ever touching Nix or a
-# real download - the posture -> package-set/settings-file/alias wiring now
-# lives in modules/codespace.nix (see flake.nix), so this is the only place
-# that actually exercises it end to end, for both postures.
+# logic (detect_posture, require_codespaces, main's posture dispatch)
+# without ever touching Nix, apt, or a real download - the posture ->
+# package-set/settings-file/alias wiring now lives in modules/codespace.nix
+# (personal) and work/codespace-bootstrap.sh (work), so this is the only
+# place that actually exercises either end to end.
 #
 # Requires Docker. Usage: bash install.container-test.sh
 set -uo pipefail
@@ -99,6 +101,9 @@ done
 # install.sh - home-manager's collision check refuses to back up symlinks
 # at all (every backup branch in its check-link-targets.sh requires
 # `! -L`), so install.sh has to move those aside itself before the switch.
+# codespace-work only - work/codespace-bootstrap.sh's own link_with_backup
+# (shared with the Mac path) handles a pre-existing symlink by just
+# re-pointing it, no equivalent seed needed there.
 docker exec -u codespace-personal "$CONTAINER" bash -c '
   set -e
   mkdir -p ~/.config ~/leftover-nvim
@@ -110,35 +115,89 @@ docker exec -u codespace-personal "$CONTAINER" bash -c '
 PERSONAL_REPO="$(origin_owner "$ORIGIN_URL")/some-personal-project"
 WORK_REPO="acme-corp/widgets" # deliberately a different owner - see detect_posture in install.sh
 
-# Asserted, not bare: this file runs without `set -e` (so one failed assert
-# doesn't abort the suite), so an unchecked install.sh exit status would be
-# discarded - and its last step (sync_neovim_plugins) runs after everything
-# the assertions below observe, so a failure there would otherwise leave the
-# rehearsal green while a real codespace reports a failed setup.
+# --- work posture runs FIRST, before Nix has ever touched this container ----
+# This ordering is what makes the "work posture never installs Nix" proof
+# below actually mean something: the Nix installer's multi-user mode
+# writes system-wide profile snippets (e.g. /etc/profile.d/nix.sh) that
+# every user in the container would pick up, personal-posture user
+# included - so if codespace-personal's Nix install ran first, a
+# regression that made the work path start installing Nix could still
+# pass a "codespace-work has no nix on PATH" check by accident, since
+# /nix would already exist container-wide either way. Checking
+# immediately after work's own install, before personal's install has
+# had any chance to run, removes that confound entirely.
+WORK_INSTALL_LOG="$BUNDLE_DIR/work-install.log"
+echo "==> running install.sh (work posture) - before Nix touches this container at all"
+docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
+  bash -c 'cd ~/dotfiles-src && bash install.sh' >"$WORK_INSTALL_LOG" 2>&1
+WORK_INSTALL_STATUS=$?
+cat "$WORK_INSTALL_LOG"
+assert "install.sh exits 0 (work posture)" [ "$WORK_INSTALL_STATUS" -eq 0 ]
+
+# --- no-Nix / no-clone proof -------------------------------------------------
+
+nix_directory_absent() {
+  ! docker exec "$CONTAINER" bash -c '[ -e /nix ]'
+}
+
+nix_binary_absent() {
+  local user="$1"
+  ! docker exec -u "$user" "$CONTAINER" bash -c 'command -v nix' >/dev/null 2>&1
+}
+
+# The only .git directory allowed to exist anywhere under the work user's
+# HOME is the one the test harness itself created above (git clone of the
+# bundle into ~/dotfiles-src, before install.sh ever ran) - anything else
+# would mean something install.sh reached (directly, or transitively via
+# a tool it invoked) cloned a repository, the one hard requirement this
+# whole change exists to satisfy.
+no_repo_was_cloned() {
+  local user="$1"
+  local expected="/home/$user/dotfiles-src/.git" hits
+  hits="$(docker exec -u "$user" "$CONTAINER" bash -c \
+    'find "$HOME" -maxdepth 6 -name .git 2>/dev/null')"
+  if [ "$hits" = "$expected" ]; then
+    return 0
+  fi
+  echo "  unexpected .git directories:" >&2
+  echo "$hits" >&2
+  return 1
+}
+
+assert "no /nix directory exists anywhere in the container yet" nix_directory_absent
+assert "codespace-work: nix is not on PATH" nix_binary_absent codespace-work
+assert "codespace-work: nothing under HOME was git-cloned besides the test harness's own dotfiles-src checkout" \
+  no_repo_was_cloned codespace-work
+
 echo "==> running install.sh (personal posture)"
 assert "install.sh exits 0 (personal posture)" \
   docker exec -u codespace-personal -e CODESPACES=true -e GITHUB_REPOSITORY="$PERSONAL_REPO" "$CONTAINER" \
   bash -c 'cd ~/dotfiles-src && bash install.sh'
 
-echo "==> running install.sh (work posture)"
-assert "install.sh exits 0 (work posture)" \
-  docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
-  bash -c 'cd ~/dotfiles-src && bash install.sh'
+# --- shared tool-presence assertions -----------------------------------------
 
-# --- assertions --------------------------------------------------------------
-
-# shellcheck disable=SC2016 # deliberately unexpanded here - this is a
-# template string, expanded by the *remote* shell each `docker exec` runs.
-nix_env_prefix='. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null; . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" 2>/dev/null;'
+# Adds ~/.local/bin (codespace-work's own downloaded binaries - nvim,
+# stylua, ruff, starship - and its fd symlink) ahead of a best-effort Nix
+# profile source (codespace-personal only; both `.` calls no-op silently
+# for the other posture, since neither path exists there). One prefix for
+# both postures rather than two, since every check below runs against
+# both users anyway.
+# shellcheck disable=SC2016 # deliberately unexpanded - a template string
+# expanded by the *remote* shell each `docker exec` runs.
+env_prefix='export PATH="$HOME/.local/bin:$PATH"; . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null; . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" 2>/dev/null;'
 
 tool_on_path() {
   local user="$1" tool="$2"
-  docker exec -u "$user" "$CONTAINER" bash -c "$nix_env_prefix command -v $tool" >/dev/null 2>&1
+  docker exec -u "$user" "$CONTAINER" bash -c "$env_prefix command -v $tool" >/dev/null 2>&1
+}
+
+tool_absent() {
+  ! tool_on_path "$1" "$2"
 }
 
 ghostty_absent() {
   local user="$1"
-  ! docker exec -u "$user" "$CONTAINER" bash -c "$nix_env_prefix command -v ghostty" >/dev/null 2>&1
+  ! docker exec -u "$user" "$CONTAINER" bash -c "$env_prefix command -v ghostty" >/dev/null 2>&1
 }
 
 claude_settings_target_matches() {
@@ -155,15 +214,17 @@ claude_settings_target_matches() {
 
 cc_alias_is() {
   local user="$1" expected="$2" actual
-  # bash -c wrapping matters here, not just quoting style: zsh itself isn't
-  # on docker exec's default PATH (there's no apt zsh in this image, only
-  # the Nix one) - $nix_env_prefix has to run in a shell FIRST to put it on
-  # PATH before "zsh" can be resolved as the exec target at all.
+  # bash -c wrapping matters here, not just quoting style: zsh itself
+  # isn't on docker exec's default PATH for either posture (there's no
+  # apt zsh on it until $env_prefix's PATH/profile setup runs, or the
+  # Nix one for personal) - $env_prefix has to run in a shell FIRST to
+  # put zsh on PATH before it can be resolved as the exec target at all.
   #
-  # $aliases[cc], not the `alias` builtin: zsh's builtin quotes values that
-  # contain spaces (cc='claude --dangerously-skip-permissions'), which only
-  # the personal-posture alias does - the raw array avoids that asymmetry.
-  actual="$(docker exec -u "$user" "$CONTAINER" bash -c "$nix_env_prefix zsh -ic 'echo -n \"\$aliases[cc]\"'" 2>/dev/null)"
+  # $aliases[cc], not the `alias` builtin: zsh's builtin quotes values
+  # that contain spaces (cc='claude --dangerously-skip-permissions'),
+  # which only the personal-posture alias does - the raw array avoids
+  # that asymmetry.
+  actual="$(docker exec -u "$user" "$CONTAINER" bash -c "$env_prefix zsh -ic 'echo -n \"\$aliases[cc]\"'" 2>/dev/null)"
   [ "$actual" = "$expected" ]
 }
 
@@ -183,17 +244,30 @@ seeded_zshrc_backed_up() {
 }
 
 nvim_config_is_managed() {
-  docker exec -u codespace-personal "$CONTAINER" bash -c \
-    '[ "$(readlink -f "$HOME/.config/nvim")" = "$HOME/dotfiles-src/home/.config/nvim" ]'
+  local user="$1"
+  docker exec -u "$user" "$CONTAINER" bash -c \
+    "[ \"\$(readlink -f \"\$HOME/.config/nvim\")\" = \"\$HOME/dotfiles-src/home/.config/nvim\" ]"
 }
 
+# Present on both postures - see work/Brewfile (work) and modules/core.nix
+# (personal, via flake.nix's homeConfigurations.codespace-personal); the
+# two package lists were built to match on purpose.
+COMMON_TOOLS="nvim rg fd jq starship stylua prettierd ruff direnv gh zsh git node go python3"
+
 for user in codespace-personal codespace-work; do
-  for tool in nvim rg fd fzf jq; do
+  for tool in $COMMON_TOOLS; do
     assert "$user: $tool on PATH" tool_on_path "$user" "$tool"
   done
   assert "$user: ghostty absent" ghostty_absent "$user"
-  assert "$user: default shell is the Nix zsh" default_shell_is_zsh "$user"
+  assert "$user: default shell is zsh" default_shell_is_zsh "$user"
+  assert "$user: nvim config resolves to the repo's home/.config/nvim" nvim_config_is_managed "$user"
 done
+
+# fzf is the one tool intentionally NOT shared - see README.md's
+# "Deliberately excluded from the work host" list, which this codespace
+# path also honors (work/Brewfile never listed it either).
+assert "codespace-personal: fzf on PATH" tool_on_path codespace-personal fzf
+assert "codespace-work: fzf absent (excluded, matching the Mac work host)" tool_absent codespace-work fzf
 
 assert "codespace-personal: ~/.claude/settings.json links codespaces/claude-settings.json" \
   claude_settings_target_matches codespace-personal "codespaces/claude-settings.json"
@@ -209,8 +283,26 @@ assert "codespace-personal: seeded ~/.config/nvim symlink backed up as .hm-backu
   seeded_nvim_backed_up
 assert "codespace-personal: seeded ~/.zshrc backed up as .hm-backup" \
   seeded_zshrc_backed_up
-assert "codespace-personal: ~/.config/nvim now resolves to the repo config" \
-  nvim_config_is_managed
+
+# --- work posture: output says what happened, and a re-run is safe ----------
+
+assert "work install output names the posture and confirms no Nix/clone" \
+  grep -q "installing via apt/npm/direct-binary (work posture) - no Nix, no cloned repositories" "$WORK_INSTALL_LOG"
+assert "work install output lists deliberately-skipped macOS-only tools" \
+  grep -q "Deliberately not installed (macOS-only, no codespace equivalent):" "$WORK_INSTALL_LOG"
+assert "work install output states neovim plugins are not pre-synced" \
+  grep -q "Deliberately not synced: neovim plugins" "$WORK_INSTALL_LOG"
+
+echo "==> re-running install.sh (work posture) to check idempotency"
+assert "install.sh exits 0 on a second work-posture run" \
+  docker exec -u codespace-work -e CODESPACES=true -e GITHUB_REPOSITORY="$WORK_REPO" "$CONTAINER" \
+  bash -c 'cd ~/dotfiles-src && bash install.sh >/tmp/second-run.log 2>&1'
+# shellcheck disable=SC2016 # deliberately unexpanded - a template string
+# expanded by the *remote* shell docker exec runs.
+assert "second run creates no new .pre-dotfiles-backup files (symlinks already pointed at the repo)" \
+  docker exec -u codespace-work "$CONTAINER" bash -c \
+  '[ -z "$(find "$HOME" -maxdepth 3 -name "*.pre-dotfiles-backup")" ]'
+assert "second run still leaves nix absent" nix_directory_absent
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

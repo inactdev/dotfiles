@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# The codespace-work bootstrap path: plain apt/npm/direct-binary installs,
+# no Nix, no Homebrew, no cloned repositories. Invoked by install.sh for
+# work-posture Codespaces only - see install.sh's main() and AGENTS.md.
+#
+# work/Brewfile is this script's intent, not its manifest: every tool
+# there is translated to the codespace universal image's own package
+# manager (apt) first, a language package manager already on the image
+# (npm, since Node ships with the image) second, and a direct download of
+# an official release binary only when neither covers a modern-enough
+# version (see install_neovim, install_stylua, install_starship,
+# install_ruff). Homebrew-on-Linux is deliberately not an option - it is
+# exactly the kind of heavy, slow install this script exists to replace.
+# macOS-only Brewfile entries (ghostty, docker-desktop, the nerd font
+# cask) have no codespace equivalent and are simply not installed.
+#
+# Package installation (this file) is the only thing that genuinely
+# differs from the Mac --no-nix path. Everything else - symlinking
+# configs, linking work/zshrc, linking Claude settings, git config, and
+# the git/gh pending-report helper - is plain shell with nothing
+# macOS-specific about it, so it's sourced straight from work/bootstrap.sh
+# rather than copied: link_with_backup, install_symlinks, install_zshrc,
+# install_claude_settings, configure_git_identity, configure_git,
+# print_git_gh_pending. install_ghostty_symlink is the one Mac-only piece
+# left there - this file never calls it (no GUI terminal in a container).
+#
+# Every function here is idempotent (checks `command -v`/`dpkg -s` before
+# acting) and safe to re-run. Nothing here may assume a specific username
+# or home directory layout beyond $HOME, and nothing here may touch
+# flake.nix/modules/*.nix/configuration.nix or the personal-mac path.
+set -euo pipefail
+
+CODESPACE_BOOTSTRAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck disable=SC1091
+source "$CODESPACE_BOOTSTRAP_DIR/bootstrap.sh"
+
+# INSTALLED/SKIPPED_PRESENT/PENDING have no Mac equivalent - `brew bundle`
+# either fully succeeds or the whole Mac bootstrap aborts, so it has no
+# per-tool state to track the way this apt/npm/binary path does.
+INSTALLED=()
+SKIPPED_PRESENT=()
+PENDING=()
+
+APT_UPDATED=0
+apt_update_once() {
+  if [ "$APT_UPDATED" = 0 ]; then
+    sudo apt-get update -y
+    APT_UPDATED=1
+  fi
+}
+
+# Takes one or more package names - needed for node, whose apt package
+# doesn't bundle npm the way the universal image's own Node (via nvm)
+# does, so that fallback needs two packages installed together.
+apt_install() {
+  apt_update_once
+  sudo apt-get install -y --no-install-recommends "$@"
+}
+
+# install_binary_tool CLI_NAME LABEL INSTALL_FN
+# Skips INSTALL_FN entirely when CLI_NAME is already on PATH - this is
+# what makes every tool here safe to re-run, and what lets the universal
+# Codespaces image's own preinstalled tools (node, go, git, gh, rbenv, ...
+# whichever it happens to ship) short-circuit without ever reaching apt,
+# npm, or a binary download.
+install_binary_tool() {
+  local cli="$1" label="$2" install_fn="$3"
+  if command -v "$cli" >/dev/null 2>&1; then
+    echo "==> $label already present, skipping"
+    SKIPPED_PRESENT+=("$label")
+    return
+  fi
+  echo "==> installing $label"
+  if "$install_fn"; then
+    INSTALLED+=("$label")
+  else
+    echo "    WARN: could not install $label" >&2
+    PENDING+=("$label")
+  fi
+}
+
+# --- apt-packaged tools ------------------------------------------------
+
+install_git() { apt_install git; }
+install_jq() { apt_install jq; }
+install_ripgrep() { apt_install ripgrep; }
+install_direnv() { apt_install direnv; }
+install_zsh() { apt_install zsh; }
+
+# Ubuntu's fd package is named fd-find and installs the binary as
+# `fdfind` (a real `fd` already exists in Debian/Ubuntu, unrelated to
+# this one) - symlink it under ~/.local/bin so `fd` resolves like it
+# does everywhere else this repo is used.
+install_fd() {
+  local fdfind_path
+  apt_install fd-find || return 1
+  fdfind_path="$(command -v fdfind)" || return 1
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$fdfind_path" "$HOME/.local/bin/fd"
+}
+
+# rbenv itself is current via apt, but the bundled ruby-build plugin only
+# knows older Ruby releases - acceptable here since this script only
+# needs rbenv present for shell init (work/zshrc), not for
+# installing a specific Ruby version. A human wanting a newer Ruby should
+# update ruby-build by hand; that's a pre-existing rbenv/apt limitation,
+# not something this script can fix without a git clone.
+install_rbenv() { apt_install rbenv; }
+
+install_zsh_plugin_packages() {
+  local label="zsh-autosuggestions/zsh-syntax-highlighting"
+  if dpkg -s zsh-autosuggestions >/dev/null 2>&1 && dpkg -s zsh-syntax-highlighting >/dev/null 2>&1; then
+    echo "==> $label already present, skipping"
+    SKIPPED_PRESENT+=("$label")
+    return
+  fi
+  echo "==> installing $label"
+  if apt_install zsh-autosuggestions && apt_install zsh-syntax-highlighting; then
+    INSTALLED+=("$label")
+  else
+    echo "    WARN: could not install $label" >&2
+    PENDING+=("$label")
+  fi
+}
+
+# --- gh: official apt repo, no clone ------------------------------------
+
+install_gh() {
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
+    sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+  sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
+    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  apt_install gh
+}
+
+# --- npm-packaged tools (Node already ships on the universal image) -----
+
+install_prettierd() {
+  command -v npm >/dev/null 2>&1 || return 1
+  npm install -g @fsouza/prettierd
+}
+
+install_claude_code() {
+  command -v npm >/dev/null 2>&1 || return 1
+  npm install -g @anthropic-ai/claude-code
+}
+
+# --- direct release-binary downloads (packaged versions are too old / --
+# --- absent from apt entirely) ------------------------------------------
+
+# Ubuntu's neovim package lags upstream by several minor versions - fetch
+# the latest stable release tarball straight from GitHub's release
+# assets (not a git clone) and unpack it under ~/.local.
+install_neovim() {
+  local tmp status
+  tmp="$(mktemp -d)"
+  # Chained with && and the status captured explicitly: install_binary_tool
+  # calls this as an `if` condition, which suspends -e for its whole
+  # dynamic extent, so a failed curl/tar wouldn't otherwise abort here -
+  # and if `rm -rf` (which always succeeds) were left as the last
+  # statement, its exit status would silently overwrite a real failure
+  # with success. Capturing status ourselves is what makes a real
+  # download/extract failure actually get reported as pending.
+  curl -fsSL -o "$tmp/nvim.tar.gz" \
+    https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz &&
+    mkdir -p "$HOME/.local" &&
+    # The release tarball nests everything under one nvim-linux-x86_64/
+    # directory (bin/, lib/, share/) - strip it so the contents land
+    # directly under ~/.local, same layout as ~/.local/bin already expects.
+    tar -C "$HOME/.local" --strip-components=1 -xzf "$tmp/nvim.tar.gz"
+  status=$?
+  rm -rf "$tmp"
+  return "$status"
+}
+
+# stylua isn't packaged for apt at all - GitHub release zip is the
+# official distribution method (see https://github.com/JohnnyMorganz/StyLua).
+install_stylua() {
+  local tmp status
+  tmp="$(mktemp -d)"
+  # See install_neovim's comment for why this is a && chain with an
+  # explicitly captured status rather than a plain sequence of
+  # statements ending in `rm -rf`.
+  { command -v unzip >/dev/null 2>&1 || apt_install unzip; } &&
+    curl -fsSL -o "$tmp/stylua.zip" \
+      https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux-x86_64.zip &&
+    unzip -q -o "$tmp/stylua.zip" -d "$tmp" &&
+    mkdir -p "$HOME/.local/bin" &&
+    install -m 0755 "$tmp/stylua" "$HOME/.local/bin/stylua"
+  status=$?
+  rm -rf "$tmp"
+  return "$status"
+}
+
+# Official standalone installer - downloads a prebuilt binary from GitHub
+# Releases, same as the ruff/starship cases below (see
+# https://docs.astral.sh/ruff/installation/). Not a git clone.
+install_ruff() {
+  curl -LsSf https://astral.sh/ruff/install.sh | sh
+}
+
+# Official installer - downloads a prebuilt binary from GitHub Releases
+# (see https://starship.rs/guide/#%F0%9F%9A%80-installation). --yes skips
+# the interactive confirmation prompt, required for a non-interactive
+# codespace setup.
+install_starship() {
+  curl -sS https://starship.rs/install.sh | sh -s -- --yes
+}
+
+install_apt_tools() {
+  install_binary_tool git git install_git
+  install_binary_tool jq jq install_jq
+  install_binary_tool rg ripgrep install_ripgrep
+  install_binary_tool fd fd install_fd
+  install_binary_tool direnv direnv install_direnv
+  install_binary_tool rbenv rbenv install_rbenv
+  install_binary_tool gh gh install_gh
+  install_binary_tool zsh zsh install_zsh
+  install_zsh_plugin_packages
+}
+
+# cli, label, and apt package(s) for each language runtime that ships on
+# the universal Codespaces image already - apt here is only a safety net
+# for a non-universal base image, and its versions may lag what the
+# universal image ships, so it's a fallback rather than the primary path.
+install_language_runtime_fallback() {
+  local cli="$1" label="$2"
+  shift 2
+  if command -v "$cli" >/dev/null 2>&1; then
+    SKIPPED_PRESENT+=("$label")
+    return
+  fi
+  echo "==> $label not found, installing from apt (older than the universal image's own $label)"
+  if apt_install "$@"; then
+    INSTALLED+=("$label (apt fallback)")
+  else
+    echo "    WARN: could not install $label" >&2
+    PENDING+=("$label")
+  fi
+}
+
+install_language_runtimes() {
+  # Ubuntu's nodejs package doesn't bundle npm the way the universal
+  # image's own Node (via nvm) does - both packages, or install_claude_code
+  # /install_prettierd (npm install -g) fail right after with npm missing.
+  install_language_runtime_fallback node node nodejs npm
+  install_language_runtime_fallback go go golang-go
+  install_language_runtime_fallback python3 python3 python3
+}
+
+install_release_binaries() {
+  install_binary_tool nvim neovim install_neovim
+  install_binary_tool stylua stylua install_stylua
+  install_binary_tool ruff ruff install_ruff
+  install_binary_tool starship starship install_starship
+  install_binary_tool claude "claude-code" install_claude_code
+  install_binary_tool prettierd prettierd install_prettierd
+}
+
+# codespace-only: there is no equivalent in work/bootstrap.sh because the
+# Mac's default shell is already zsh (has been since macOS Catalina), so
+# it never needed to chsh.
+set_zsh_as_default_shell() {
+  local zsh_path
+  zsh_path="$(command -v zsh)" || return 0
+  if [ "${SHELL:-}" != "$zsh_path" ]; then
+    sudo chsh -s "$zsh_path" "$(whoami)" || echo "    WARN: could not chsh to zsh (non-fatal)"
+  fi
+}
+
+print_summary() {
+  echo ""
+  echo "==> done"
+  if [ "${#INSTALLED[@]}" -gt 0 ]; then
+    echo "Installed:"
+    printf '  - %s\n' "${INSTALLED[@]}"
+  fi
+  if [ "${#SKIPPED_PRESENT[@]}" -gt 0 ]; then
+    echo "Already present, skipped:"
+    printf '  - %s\n' "${SKIPPED_PRESENT[@]}"
+  fi
+  echo "Deliberately not installed (macOS-only, no codespace equivalent):"
+  echo "  - ghostty, docker-desktop, font-inconsolata-nerd-font"
+  echo "Deliberately not synced: neovim plugins (nvim config is linked, but"
+  echo "  Lazy is not pre-synced here - see AGENTS.md; first manual nvim"
+  echo "  launch will bootstrap Lazy itself, same as the Mac work host today)"
+  local git_gh_pending
+  git_gh_pending="$(print_git_gh_pending)"
+  if [ "${#PENDING[@]}" -gt 0 ] || [ -n "$git_gh_pending" ]; then
+    echo "Still needs attention:"
+    if [ "${#PENDING[@]}" -gt 0 ]; then
+      printf '  - could not install: %s\n' "${PENDING[@]}"
+    fi
+    [ -n "$git_gh_pending" ] && printf '%s\n' "$git_gh_pending"
+  else
+    echo "Everything applied cleanly."
+  fi
+}
+
+main() {
+  local repo="${1:?usage: codespace-bootstrap.sh <repo-dir>}"
+  install_apt_tools
+  install_language_runtimes
+  install_release_binaries
+  install_symlinks "$repo"
+  install_zshrc "$repo"
+  install_claude_settings "$repo"
+  # configure_git's interactive identity prompt only fires on a real TTY
+  # (`[ -t 0 ]`), which a non-interactive Codespaces setup-script run
+  # never has - it degrades to report-pending-don't-prompt here, exactly
+  # what this path needs, with no codespace-specific override required.
+  configure_git
+  set_zsh_as_default_shell
+  print_summary
+}
+
+# Allow work/codespace-bootstrap.test.sh to source this file and call
+# individual functions without running the whole bootstrap.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi
