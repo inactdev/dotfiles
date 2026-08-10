@@ -11,15 +11,17 @@
 #
 # Usage: bash install.test.sh
 #
-# Three shellcheck codes are expected throughout this harness and disabled
-# file-wide rather than at ~20 individual sites: SC2329 (mock/stub functions
-# are defined to shadow install.sh's own, then invoked indirectly by the
-# sourced script, never by name here) and SC2030/SC2031 (SCRIPT_DIR is
+# Four shellcheck codes are expected throughout this harness and disabled
+# file-wide rather than at ~20 individual sites: SC2329/SC2317 (mock/stub
+# functions are defined to shadow install.sh's own, then invoked indirectly
+# by the sourced script, never by name here - shellcheck 0.10 split that
+# report out of SC2317 into SC2329, so both codes have to be named for the
+# older shellcheck on CI's ubuntu runner) and SC2030/SC2031 (SCRIPT_DIR is
 # reassigned inside per-test subshells and read again outside them - that is
 # the isolation this suite wants, not a lost write). Anything shellcheck
-# reports outside these three is a real finding: fix it, don't extend this
+# reports outside these four is a real finding: fix it, don't extend this
 # list.
-# shellcheck disable=SC2329,SC2030,SC2031
+# shellcheck disable=SC2329,SC2317,SC2030,SC2031
 set -uo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

@@ -184,6 +184,41 @@ MOCK
   chmod +x "$dir/apt-get" "$dir/dpkg" "$dir/sudo" "$dir/curl" "$dir/npm"
 }
 
+# Tools whose absence this suite depends on: every assertion about what
+# gets installed keys off codespace-bootstrap.sh's own `command -v` gates,
+# so a tool the *host* happens to ship silently turns "installs gh" into
+# "gh already present, skipping". That is what made this suite pass on
+# macOS and fail seven assertions on ubuntu-latest, which ships
+# /usr/bin/gh. /usr/bin:/bin can't just be dropped from the run PATH (the
+# script and the mocks need real coreutils), so SYS_BIN mirrors them as
+# symlinks minus exactly these names. git/jq/tar/whoami are deliberately
+# not listed: setup() supplies real ones through MOCK_DIR, which comes
+# first on PATH anyway.
+SHADOWED_TOOLS="rg fd fdfind direnv rbenv gh zsh unzip nvim stylua ruff starship claude prettierd node go python3"
+
+# Built once for the whole suite rather than per setup(): it is read-only,
+# identical for every test, and mirrors ~1000 entries.
+build_sys_bin() {
+  SUITE_TMP=$(mktemp -d)
+  SYS_BIN="$SUITE_TMP/sysbin"
+  mkdir -p "$SYS_BIN"
+  local dir entry name
+  local allowed=()
+  for dir in /usr/bin /bin; do
+    [ -d "$dir" ] || continue
+    for entry in "$dir"/*; do
+      name=${entry##*/}
+      case " $SHADOWED_TOOLS " in
+        *" $name "*) continue ;;
+      esac
+      allowed+=("$entry")
+    done
+  done
+  # -f, and one batched call per suite: on Ubuntu /bin is a symlink to
+  # /usr/bin, so the two passes above collect every name twice.
+  ln -sf "${allowed[@]}" "$SYS_BIN/"
+}
+
 setup() {
   TMP=$(mktemp -d)
   MOCK_DIR="$TMP/bin"
@@ -210,18 +245,21 @@ teardown() {
 }
 
 run_bootstrap() {
-  # Hermetic PATH: only the mocks plus core coreutils, so a bug can never
-  # apt-install a real package, hit the real network, or touch this
-  # machine's real dotfiles. MOCK_DIR here isn't for codespace-bootstrap.sh
-  # itself (it never reads that var) - it's for the mocked apt-get *it*
-  # spawns, which needs $MOCK_DIR in ITS environment to know where to drop
-  # each package's stub binary. The PATH="$MOCK_DIR:..." expansion below
+  # Hermetic PATH: only the mocks plus core coreutils (SYS_BIN, which is
+  # /usr/bin:/bin minus every tool under test - see SHADOWED_TOOLS), so a
+  # bug can never apt-install a real package, hit the real network, or
+  # touch this machine's real dotfiles, and the result never depends on
+  # which tools the host happens to have. MOCK_DIR here isn't for
+  # codespace-bootstrap.sh itself (it never reads that var) - it's for the
+  # mocked apt-get *it* spawns, which needs $MOCK_DIR in ITS environment to
+  # know where to drop each package's stub binary. The
+  # PATH="$MOCK_DIR:..." expansion below
   # reads the enclosing shell's $MOCK_DIR (already set by setup()), not
   # this line's own prefix assignment - shellcheck (SC2097/SC2098) can't
   # tell those two uses apart, hence the disable.
   # shellcheck disable=SC2097,SC2098
   HOME="$HOME" FIXTURES="$FIXTURES" MOCK_DIR="$MOCK_DIR" \
-    PATH="$MOCK_DIR:/usr/bin:/bin" "$SCRIPT" "$REPO_DIR" </dev/null
+    PATH="$MOCK_DIR:$SYS_BIN" "$SCRIPT" "$REPO_DIR" </dev/null
 }
 
 # --- tests --------------------------------------------------------------
@@ -247,7 +285,11 @@ test_already_present_tools_are_not_reinstalled() {
   # binaries there, and overwriting a symlink target with `>` follows the
   # link - pointing that at a real system git/jq would clobber it. Every
   # other tool here is a fresh mock file, never a symlink, so this is safe.
-  for tool in rg fd direnv rbenv gh zsh node go python3; do
+  # unzip belongs here with the rest: it is gated on `command -v` exactly
+  # like the others (install_stylua apt-installs it when missing), so
+  # leaving it out would make this assertion pass or fail on whether the
+  # host ships unzip.
+  for tool in rg fd direnv rbenv gh zsh unzip node go python3; do
     printf '#!/bin/sh\nexit 0\n' >"$MOCK_DIR/$tool"
     chmod +x "$MOCK_DIR/$tool"
   done
@@ -545,6 +587,9 @@ test_codespace_bootstrap_does_not_redefine_shared_functions() {
   assert_eq "no shared function is redefined locally in codespace-bootstrap.sh" "" "$hits"
   teardown
 }
+
+build_sys_bin
+trap 'rm -rf "$SUITE_TMP"' EXIT
 
 test_apt_tools_installed_when_missing
 test_already_present_tools_are_not_reinstalled
