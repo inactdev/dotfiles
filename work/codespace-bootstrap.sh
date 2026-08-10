@@ -51,12 +51,22 @@ INSTALLED=()
 SKIPPED_PRESENT=()
 PENDING=()
 
+# Memoizes both the fact of the update and its result: every caller after
+# the first gets the same exit status back rather than a bare 0, so an
+# `apt-get update` that actually failed keeps propagating instead of
+# letting each apt_install proceed against a stale index. APT_UPDATED is
+# set before the update runs, so a failure is never retried once per tool;
+# install_gh deliberately resets it to force one fresh re-index after
+# adding its own source.
 APT_UPDATED=0
+APT_UPDATE_STATUS=0
 apt_update_once() {
   if [ "$APT_UPDATED" = 0 ]; then
-    sudo apt-get update -y
     APT_UPDATED=1
+    sudo apt-get update -y
+    APT_UPDATE_STATUS=$?
   fi
+  return "$APT_UPDATE_STATUS"
 }
 
 # Takes one or more package names - needed for node, whose apt package

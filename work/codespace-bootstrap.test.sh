@@ -71,6 +71,9 @@ mock_bin() {
 #!/bin/sh
 echo "apt-get $*" >>"$FIXTURES/apt.log"
 if [ "$1 $2" = "update -y" ]; then
+  # $FIXTURES/apt-update-fail stands in for a broken source or a
+  # network blip - see test_failed_apt_update_does_not_install_from_a_stale_index.
+  [ -f "$FIXTURES/apt-update-fail" ] && exit 1
   exit 0
 fi
 if [ "$1" = "install" ]; then
@@ -328,6 +331,25 @@ test_failed_gh_keyring_download_does_not_publish_an_apt_source() {
   teardown
 }
 
+# apt_update_once memoizes its exit status, not just the fact that it
+# ran: errexit is suspended everywhere apt_install is reached, so a bare
+# trailing `APT_UPDATED=1` would report success and let every tool
+# install against a stale index - for gh that means silently getting the
+# distro's old version instead of the one its freshly added source
+# provides.
+test_failed_apt_update_does_not_install_from_a_stale_index() {
+  setup
+  : >"$FIXTURES/apt-update-fail"
+  out=$(run_bootstrap 2>&1)
+  code=$?
+  assert_eq "script still exits 0 when apt-get update fails" "0" "$code"
+  assert_not_contains "no package installed against a stale index" \
+    "$(cat "$FIXTURES/apt.log")" "install -y"
+  assert_contains "ripgrep reported pending" "$out" "could not install: ripgrep"
+  assert_contains "gh reported pending" "$out" "could not install: gh"
+  teardown
+}
+
 # The hermetic curl mock can never run the real cargo-dist installer, so
 # this checks the invocation itself: without RUFF_NO_MODIFY_PATH the
 # installer appends to the first existing ~/.zshrc - which, from the
@@ -492,6 +514,7 @@ test_partial_failure_with_working_git_and_gh_still_exits_zero
 test_local_bin_tools_are_detected_on_a_rerun
 test_gh_apt_source_is_indexed_before_installing_gh
 test_failed_gh_keyring_download_does_not_publish_an_apt_source
+test_failed_apt_update_does_not_install_from_a_stale_index
 test_ruff_installer_never_edits_shell_rc_files
 test_no_git_clone_in_source
 test_symlinks_point_into_repo_no_ghostty
