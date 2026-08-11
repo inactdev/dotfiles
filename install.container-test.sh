@@ -272,7 +272,7 @@ nvim_config_is_managed() {
 # Present on both postures - see work/Brewfile (work) and modules/core.nix
 # (personal, via flake.nix's homeConfigurations.codespace-personal); the
 # two package lists were built to match on purpose.
-COMMON_TOOLS="nvim rg fd jq starship herdr stylua prettierd ruff direnv gh zsh git node go python3 claude"
+COMMON_TOOLS="nvim rg fd jq starship stylua prettierd ruff direnv gh zsh git node go python3 claude"
 
 for user in codespace-personal codespace-work; do
   for tool in $COMMON_TOOLS; do
@@ -288,6 +288,9 @@ done
 # path also honors (work/Brewfile never listed it either).
 assert "codespace-personal: fzf on PATH" tool_on_path codespace-personal fzf
 assert "codespace-work: fzf absent (excluded, matching the Mac work host)" tool_absent codespace-work fzf
+assert "codespace-personal: herdr absent (codespaces never import modules/mac.nix)" \
+  tool_absent codespace-personal herdr
+assert "codespace-work: herdr on PATH" tool_on_path codespace-work herdr
 
 for tool in $COMMON_TOOLS fzf; do
   assert "codespace-personal: $tool comes from the home-manager profile, not work's apt installs" \
