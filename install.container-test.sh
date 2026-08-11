@@ -272,7 +272,7 @@ nvim_config_is_managed() {
 # Present on both postures - see work/Brewfile (work) and modules/core.nix
 # (personal, via flake.nix's homeConfigurations.codespace-personal); the
 # two package lists were built to match on purpose.
-COMMON_TOOLS="nvim rg fd jq starship stylua prettierd ruff direnv gh zsh git node go python3 claude"
+COMMON_TOOLS="nvim rg fd jq starship herdr stylua prettierd ruff direnv gh zsh git node go python3 claude"
 
 for user in codespace-personal codespace-work; do
   for tool in $COMMON_TOOLS; do

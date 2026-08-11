@@ -194,7 +194,7 @@ MOCK
 # symlinks minus exactly these names. git/jq/tar/whoami are deliberately
 # not listed: setup() supplies real ones through MOCK_DIR, which comes
 # first on PATH anyway.
-SHADOWED_TOOLS="rg fd fdfind direnv rbenv gh zsh unzip nvim stylua ruff starship claude prettierd node go python3"
+SHADOWED_TOOLS="rg fd fdfind direnv rbenv gh zsh unzip nvim stylua ruff starship herdr claude prettierd node go python3"
 
 # Built once for the whole suite rather than per setup(): it is read-only,
 # identical for every test, and mirrors ~1000 entries.
@@ -470,6 +470,7 @@ test_symlinks_point_into_repo_no_ghostty() {
   run_bootstrap >"$TMP/out.log" 2>&1 || true
   assert_eq "nvim config symlinked" "$REPO_DIR/home/.config/nvim" "$(readlink "$HOME/.config/nvim")"
   assert_eq "starship config symlinked" "$REPO_DIR/home/.config/starship.toml" "$(readlink "$HOME/.config/starship.toml")"
+  assert_eq "herdr config symlinked" "$REPO_DIR/home/.config/herdr" "$(readlink "$HOME/.config/herdr")"
   assert_eq "AGENTS.md symlinked" "$REPO_DIR/home/AGENTS.md" "$(readlink "$HOME/AGENTS.md")"
   assert_eq "CLAUDE.md symlinked to AGENTS.md" "$REPO_DIR/home/AGENTS.md" "$(readlink "$HOME/.claude/CLAUDE.md")"
   if [ ! -e "$HOME/.config/ghostty" ]; then

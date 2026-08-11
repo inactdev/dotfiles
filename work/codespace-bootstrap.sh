@@ -280,6 +280,12 @@ install_starship() {
   curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
 }
 
+# # Official installer[](https://herdr.dev/docs/install/)
+# # Puts the binary on PATH; works on the Codespaces Linux image.
+install_herdr() {
+  curl -fsSL https://herdr.dev/install.sh | sh
+}
+
 install_apt_tools() {
   # curl first: install_gh below and every release-binary install depend
   # on it.
@@ -329,6 +335,7 @@ install_release_binaries() {
   install_binary_tool stylua stylua install_stylua
   install_binary_tool ruff ruff install_ruff
   install_binary_tool starship starship install_starship
+  install_binary_tool herdr herdr install_herdr
   install_binary_tool claude "claude-code" install_claude_code
   install_binary_tool prettierd prettierd install_prettierd
 }
