@@ -309,7 +309,7 @@ test_unresolvable_dir_aborts_before_any_write() {
   setup
   mkdir -p "$TMP/home"
   out=$(
-    # shellcheck disable=SC2329 # shadows the cd builtin for run.sh's DIR computation, sourced below
+    # shellcheck disable=SC2329,SC2317 # shadows the cd builtin for run.sh's DIR computation, sourced below (SC2317 is shellcheck <0.10's code for the same report)
     cd() { return 1; }
     HOME="$TMP/home"
     # shellcheck disable=SC1090
@@ -332,7 +332,7 @@ test_dir_resolving_outside_repo_aborts_before_any_write() {
   setup
   mkdir -p "$TMP/home" "$TMP/not-the-repo"
   out=$(
-    # shellcheck disable=SC2329 # shadows the dirname command for run.sh's DIR computation, sourced below
+    # shellcheck disable=SC2329,SC2317 # shadows the dirname command for run.sh's DIR computation, sourced below (SC2317 is shellcheck <0.10's code for the same report)
     dirname() { echo "$TMP/not-the-repo"; }
     HOME="$TMP/home"
     # shellcheck disable=SC1090

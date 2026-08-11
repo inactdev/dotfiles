@@ -16,17 +16,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Every path is listed explicitly rather than by a broad glob so a new
+      # script can't be silently skipped: `work/*.sh` and `home/.local/bin/*`
+      # already sweep in those directories' `.test.sh` suites, but the
+      # root-level ones each have to be named (`run.sh` does not match
+      # `run.test.sh`, nor `install.sh` the two `install.*-test.sh`).
       - name: shellcheck
-        run: shellcheck run.sh work/*.sh install.sh home/.local/bin/*
+        run: >-
+          shellcheck run.sh run.test.sh install.sh install.test.sh
+          install.container-test.sh work/*.sh home/.local/bin/*
 
-  # run.test.sh and install.test.sh are pure bash logic tests (host
-  # selection, posture detection) with no macOS-only dependency - Ubuntu is
-  # cheaper and sufficient. Both suites isolate HOME internally, but the
-  # step also sets a scratch HOME itself as defense in depth: run.sh
-  # historically repointed ~/.dotfiles unconditionally (issue #9, since
-  # fixed by its link_dotfiles guard), so this job must never rely on the
-  # runner being disposable - a scratch HOME keeps the same workflow safe
-  # under `act` even if that guard ever regresses.
+  # run.test.sh, install.test.sh, and work/codespace-bootstrap.test.sh are
+  # pure bash logic tests (host selection, posture detection, the
+  # codespace-work apt/npm/binary install logic against mocked
+  # apt-get/curl/npm) with no macOS-only dependency - Ubuntu is cheaper and
+  # sufficient. All three isolate HOME internally, but the step also sets
+  # a scratch HOME itself as defense in depth: run.sh historically
+  # repointed ~/.dotfiles unconditionally (issue #9, since fixed by its
+  # link_dotfiles guard), so this job must never rely on the runner being
+  # disposable - a scratch HOME keeps the same workflow safe under `act`
+  # even if that guard ever regresses.
   tests-ubuntu:
     runs-on: ubuntu-latest
     steps:
@@ -35,6 +44,8 @@ jobs:
         run: HOME="$(mktemp -d)" bash run.test.sh
       - name: bash install.test.sh
         run: HOME="$(mktemp -d)" bash install.test.sh
+      - name: bash work/codespace-bootstrap.test.sh
+        run: HOME="$(mktemp -d)" bash work/codespace-bootstrap.test.sh
 
   # work/bootstrap.sh and herdr-agent-handoff-marker only ever run on the
   # work Mac / personal Mac respectively (see AGENTS.md), and their

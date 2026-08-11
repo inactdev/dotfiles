@@ -9,15 +9,18 @@
 # prompts. For a real machine (Mac or the captain's home Ubuntu box) use
 # ./run.sh instead - see README.md.
 #
-# A thin launcher, not a second package manifest: it installs Nix, then
-# applies one of two home-manager profiles (flake.nix's
-# homeConfigurations."codespace-personal"/"codespace-work", both built from
-# modules/core.nix + modules/codespace.nix) that carry the actual package
-# list - the same one personal-mac and home-linux use. Posture only picks
-# which of the two small deltas modules/codespace.nix still varies by hand
-# (the Claude settings file, and the `cc` alias) - see README.md and
-# AGENTS.md. Work Mac's separate --no-nix path (work/bootstrap.sh) is a
-# different host entirely and untouched by this.
+# A thin launcher, and the two postures now genuinely diverge: personal
+# posture installs Nix (the Determinate installer's container-safe mode)
+# and applies flake.nix's homeConfigurations."codespace-personal" - the
+# same modules/core.nix + modules/codespace.nix package list personal-mac
+# and home-linux use. Work posture never installs Nix at all - the
+# captain opens codespaces on employer repositories and Nix has no place
+# there - and instead delegates to work/codespace-bootstrap.sh, a plain
+# apt/npm/direct-binary installer with no Homebrew and no cloned
+# repositories (see that file and AGENTS.md). Work Mac's separate
+# --no-nix path (work/bootstrap.sh) is a different host entirely and
+# untouched by this; work/codespace-bootstrap.sh is its Linux/Codespaces
+# counterpart, not the same script.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -200,17 +203,35 @@ sync_neovim_plugins() {
   "$(command -v nvim)" --headless "+Lazy! sync" +qa
 }
 
+# Personal posture: unchanged Nix + home-manager path.
+main_personal() {
+  echo "==> installing via Nix (personal posture)"
+  install_nix
+  start_nix_daemon
+  apply_home_manager_profile "personal"
+  set_zsh_as_default_shell
+  sync_neovim_plugins
+}
+
+# Work posture: no Nix, no home-manager, no cloned repositories - see
+# work/codespace-bootstrap.sh for the actual install steps and
+# AGENTS.md/README.md for why the two postures now genuinely diverge.
+main_work() {
+  echo "==> installing via apt/npm/direct-binary (work posture) - no Nix, no cloned repositories"
+  "$SCRIPT_DIR/work/codespace-bootstrap.sh" "$SCRIPT_DIR"
+}
+
 main() {
   require_codespaces
   local posture
   posture="$(detect_posture "$SCRIPT_DIR")"
   echo "==> posture: $posture"
 
-  install_nix
-  start_nix_daemon
-  apply_home_manager_profile "$posture"
-  set_zsh_as_default_shell
-  sync_neovim_plugins
+  if [ "$posture" = "personal" ]; then
+    main_personal
+  else
+    main_work
+  fi
 
   echo ""
   echo "==> done in ${SECONDS}s (posture: $posture)"

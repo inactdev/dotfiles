@@ -6,6 +6,15 @@
 # file may assume a specific username or home directory layout beyond
 # $HOME, and nothing here may touch flake.nix/modules/*.nix/configuration.nix
 # or the personal-mac (Nix) path.
+#
+# Also sourced (not just executed) by work/codespace-bootstrap.sh, the
+# codespace-work no-nix path - see the BASH_SOURCE guard at the tail of
+# this file, which exists for exactly that (and is what already lets
+# work/bootstrap.test.sh source it directly). Every function below except
+# brew_bin/install_homebrew/install_packages/install_ghostty_symlink/
+# macos_write_default/configure_macos_defaults is plain shell with
+# nothing macOS-specific about it and is reused as-is by the codespace
+# path rather than copied - see AGENTS.md.
 set -euo pipefail
 
 # Collected here so the final summary can tell the captain what still
@@ -58,15 +67,25 @@ link_with_backup() {
   ln -sfn "$source" "$target"
 }
 
+# The configs every --no-nix host wants, regardless of OS - shared with
+# work/codespace-bootstrap.sh. Ghostty is deliberately separate (see
+# install_ghostty_symlink below): there's no GUI terminal to configure in
+# a codespace container, so the codespace path never calls it.
 install_symlinks() {
   local repo="$1"
   echo "==> linking configs"
   mkdir -p "$HOME/.config" "$HOME/.claude"
   link_with_backup "$repo/home/.config/nvim" "$HOME/.config/nvim"
   link_with_backup "$repo/home/.config/starship.toml" "$HOME/.config/starship.toml"
-  link_with_backup "$repo/home/.config/ghostty" "$HOME/.config/ghostty"
   link_with_backup "$repo/home/AGENTS.md" "$HOME/AGENTS.md"
   link_with_backup "$repo/home/AGENTS.md" "$HOME/.claude/CLAUDE.md"
+}
+
+# Mac-only: ghostty is a GUI terminal app, meaningless in a codespace
+# container - work/codespace-bootstrap.sh's main() never calls this.
+install_ghostty_symlink() {
+  local repo="$1"
+  link_with_backup "$repo/home/.config/ghostty" "$HOME/.config/ghostty"
 }
 
 install_zshrc() {
@@ -143,17 +162,23 @@ configure_macos_defaults() {
   killall Finder >/dev/null 2>&1 || true
 }
 
+# Shared with work/codespace-bootstrap.sh's own print_summary, which
+# also has git/gh pending state to report but no macOS defaults.
+print_git_gh_pending() {
+  if [ "$GIT_IDENTITY_PENDING" = 1 ]; then
+    echo "  - git identity: run git config --global user.name/user.email"
+  fi
+  if [ "$GH_LOGIN_PENDING" = 1 ]; then
+    echo "  - GitHub login: run gh auth login, then re-run this bootstrap"
+  fi
+}
+
 print_summary() {
   echo ""
   echo "==> done"
   if [ "$GIT_IDENTITY_PENDING" = 1 ] || [ "$MACOS_DEFAULTS_PENDING" = 1 ] || [ "$GH_LOGIN_PENDING" = 1 ]; then
     echo "Still needs attention:"
-    if [ "$GIT_IDENTITY_PENDING" = 1 ]; then
-      echo "  - git identity: run git config --global user.name/user.email"
-    fi
-    if [ "$GH_LOGIN_PENDING" = 1 ]; then
-      echo "  - GitHub login: run gh auth login, then re-run this bootstrap"
-    fi
+    print_git_gh_pending
     if [ "$MACOS_DEFAULTS_PENDING" = 1 ]; then
       echo "  - some macOS defaults were rejected, likely by MDM policy"
     fi
@@ -167,6 +192,7 @@ main() {
   install_homebrew
   install_packages "$repo"
   install_symlinks "$repo"
+  install_ghostty_symlink "$repo"
   install_zshrc "$repo"
   install_claude_settings "$repo"
   configure_git

@@ -1,6 +1,10 @@
 # Captain-triaged manifest for the --no-nix work-host path (see README.md).
 # Install EXACTLY this, nothing more. Keep in sync with the "excluded by
 # captain decision" list in README.md when either changes.
+#
+# Also the intent (not the manifest) for the codespace-work path: adding or
+# removing a line here means work/codespace-bootstrap.sh needs the matching
+# apt/npm/release-binary install too - see that file's header comment.
 
 brew "git"
 brew "ripgrep"
