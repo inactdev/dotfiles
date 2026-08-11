@@ -288,6 +288,9 @@ done
 # path also honors (work/Brewfile never listed it either).
 assert "codespace-personal: fzf on PATH" tool_on_path codespace-personal fzf
 assert "codespace-work: fzf absent (excluded, matching the Mac work host)" tool_absent codespace-work fzf
+assert "codespace-personal: herdr absent (codespaces never import modules/mac.nix)" \
+  tool_absent codespace-personal herdr
+assert "codespace-work: herdr on PATH" tool_on_path codespace-work herdr
 
 for tool in $COMMON_TOOLS fzf; do
   assert "codespace-personal: $tool comes from the home-manager profile, not work's apt installs" \

@@ -77,6 +77,7 @@ install_symlinks() {
   mkdir -p "$HOME/.config" "$HOME/.claude"
   link_with_backup "$repo/home/.config/nvim" "$HOME/.config/nvim"
   link_with_backup "$repo/home/.config/starship.toml" "$HOME/.config/starship.toml"
+  link_with_backup "$repo/home/.config/herdr" "$HOME/.config/herdr"
   link_with_backup "$repo/home/AGENTS.md" "$HOME/AGENTS.md"
   link_with_backup "$repo/home/AGENTS.md" "$HOME/.claude/CLAUDE.md"
 }

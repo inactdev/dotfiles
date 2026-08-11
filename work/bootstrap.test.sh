@@ -121,6 +121,7 @@ test_symlinks_point_into_repo() {
   run_bootstrap >"$TMP/out.log" 2>&1 || true
   assert_eq "nvim config symlinked" "$REPO_DIR/home/.config/nvim" "$(readlink "$HOME/.config/nvim")"
   assert_eq "starship config symlinked" "$REPO_DIR/home/.config/starship.toml" "$(readlink "$HOME/.config/starship.toml")"
+  assert_eq "herdr config symlinked" "$REPO_DIR/home/.config/herdr" "$(readlink "$HOME/.config/herdr")"
   assert_eq "ghostty config symlinked" "$REPO_DIR/home/.config/ghostty" "$(readlink "$HOME/.config/ghostty")"
   assert_eq "AGENTS.md symlinked" "$REPO_DIR/home/AGENTS.md" "$(readlink "$HOME/AGENTS.md")"
   assert_eq "CLAUDE.md symlinked to AGENTS.md" "$REPO_DIR/home/AGENTS.md" "$(readlink "$HOME/.claude/CLAUDE.md")"
@@ -133,11 +134,6 @@ test_symlinks_point_into_repo() {
     pass_count=$((pass_count + 1)); echo "ok - no wezterm symlink"
   else
     fail_count=$((fail_count + 1)); echo "FAIL - no wezterm symlink"
-  fi
-  if [ ! -e "$HOME/.config/herdr" ]; then
-    pass_count=$((pass_count + 1)); echo "ok - no herdr symlink"
-  else
-    fail_count=$((fail_count + 1)); echo "FAIL - no herdr symlink"
   fi
   teardown
 }
