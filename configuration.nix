@@ -25,6 +25,18 @@
     finder.CreateDesktop = false; # clean desktop
   };
 
+  # Never sleep while on AC power, via pmset's -c (charger) profile only, so
+  # battery behaviour stays at macOS' defaults. nix-darwin's own power.sleep.*
+  # options are deliberately unused: they drive `systemsetup -setComputerSleep`,
+  # which is power-source-agnostic (it would keep the machine awake on battery
+  # too) and takes precedence over pmset's per-profile timers. Absolute path
+  # because activation runs as root under `env -i` with a minimal PATH; writing
+  # the same two values is idempotent, which matters as this runs every rebuild.
+  system.activationScripts.postActivation.text = ''
+    echo "setting the AC power profile to never sleep..." >&2
+    /usr/bin/pmset -c sleep 0 disksleep 0
+  '';
+
   nix-homebrew = {
     enable = true;
     autoMigrate = true;
