@@ -59,6 +59,9 @@
       "wezterm"
       "claude-code"
       "docker-desktop"
+      # the GUI app; the like-named homebrew-core "tailscale" formula is the
+      # CLI/daemon and declares conflicts_with cask: "tailscale-app"
+      "tailscale-app"
       "my-monkeys/tap/opensuperwhisper"
     ];
   };
