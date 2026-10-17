@@ -38,3 +38,4 @@
 
 - ripgrep (rg), fd, fzf, gh, jq are installed - prefer them over grep/find/curl-to-api.
 - Dotfiles live in ~/.dotfiles (symlinked configs; edits there must be committed).
+- Repos declare their Node version in a .node-version file at the repo root, and fnm switches to it on cd (installing it if missing), from any subdirectory. Give a new repo one; a repo without it just gets the system-wide fallback node, which is nobody's pinned version.

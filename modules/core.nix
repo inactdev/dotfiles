@@ -30,7 +30,8 @@ in
     fzf
     jq
     # dev toolchain
-    nodejs
+    nodejs # fallback node, for anywhere fnm has no .node-version to act on
+    fnm
     go
     cmake
     gnumake # nix's name for make
@@ -105,6 +106,42 @@ in
 
       if command -v rbenv >/dev/null 2>&1; then
         eval "$(rbenv init - zsh)"
+      fi
+
+      # Per-project node: fnm switches on cd to whatever .node-version (or
+      # .nvmrc) declares. `fnm env` prepends its own bin dir to PATH, so an
+      # active version beats the nodejs package above, which is left as the
+      # fallback for everywhere that declares nothing.
+      if command -v fnm >/dev/null 2>&1; then
+        eval "$(fnm env --use-on-cd --shell zsh --version-file-strategy=recursive)"
+        # Then replace the body of the chpwd hook that eval just registered.
+        # Redefining it by name (rather than registering a second hook of our
+        # own) leaves fnm owning the wiring, and degrades to stock fnm
+        # behavior if a future version renames it. Two changes:
+        #   - --install-if-missing: cd'ing into a project whose version isn't
+        #     downloaded yet installs it instead of failing.
+        #   - a version-file guard: the recursive strategy's own hook drops
+        #     fnm's local-strategy guard and runs `fnm use` on every cd, which
+        #     prints "Can't find version in dotfiles" in any directory with no
+        #     version file above it (fnm issues #681, #1308) unless a `fnm
+        #     default` alias is set. Walking up in the shell keeps that quiet
+        #     without hiding real install errors behind 2>/dev/null.
+        _fnm_version_file_above() {
+          local dir=$PWD
+          while [ -n "$dir" ]; do
+            if [ -f "$dir/.node-version" ] || [ -f "$dir/.nvmrc" ]; then
+              return 0
+            fi
+            dir=''${dir%/*}
+          done
+          return 1
+        }
+        _fnm_autoload_hook() {
+          if _fnm_version_file_above; then
+            fnm use --install-if-missing --silent-if-unchanged
+          fi
+        }
+        _fnm_autoload_hook
       fi
 
       [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
