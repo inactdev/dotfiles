@@ -1,0 +1,14 @@
+{
+  "check": "./check.sh",
+  "image": "cimg/base:2025.10",
+  "timeoutSeconds": 600,
+  "protectedPaths": [
+    "check.sh",
+    ".inspector.json",
+    "run.sh",
+    "install.sh",
+    "work/bootstrap.sh",
+    "*.test.sh",
+    ".github/**"
+  ]
+}
