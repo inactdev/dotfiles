@@ -100,7 +100,7 @@
       # home-linux: the captain's home Ubuntu 24.04 box. No nix-darwin here -
       # it's a standalone home-manager configuration (not a darwinSystem)
       # composed from the same modules/core.nix + modules/desktop.nix as
-      # personal-mac, minus modules/mac.nix (Darwin-only: herdr, launchd).
+      # personal-mac, minus modules/mac.nix (Darwin-only: herdr).
       # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- switch --flake .#home-linux
       homeConfigurations."home-linux" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
@@ -125,9 +125,9 @@
       # see README.md's Codespaces section. Both compose modules/core.nix
       # plus the codespace-only delta in modules/codespace.nix - no
       # modules/desktop.nix (no ghostty, no fonts, no git identity, no
-      # local-machine Claude settings) and no modules/mac.nix (no herdr, no
-      # launchd), all structurally absent because mkCodespace's module list
-      # never imports those files. `posture` picks the two things
+      # local-machine Claude settings) and no modules/mac.nix (no herdr),
+      # all structurally absent because mkCodespace's module list never
+      # imports those files. `posture` picks the two things
       # modules/codespace.nix still varies by hand (which
       # claude-settings.json, and the `cc` alias) - everything else is
       # identical between the two, including the full modules/core.nix

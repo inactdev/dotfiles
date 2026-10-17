@@ -32,8 +32,8 @@ get the full setup via Nix + home-manager, composed from `modules/`:
   terminal app, or is specific to a machine the captain owns outright.
   `personal-mac` and `home-linux` import this; Codespaces does not, so all
   of it is structurally absent there.
-- `modules/mac.nix` - herdr config and the handoff-marker launchd agent.
-  `personal-mac` only.
+- `modules/mac.nix` - the herdr config symlink. `personal-mac` only
+  (herdr is a Homebrew cask, so it exists nowhere else).
 - `modules/codespace.nix` - the Codespaces-only delta (Claude Code itself,
   since there's no Homebrew cask to lean on; which Claude settings file;
   the `cc` alias) - see the Codespaces section below.
@@ -182,8 +182,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
 - `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
-- `sh home/.local/bin/herdr-agent-handoff-marker.test.sh` - the herdr tab-marker script, against a mocked `herdr` on a hermetic `PATH`.
 
-None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, `~/.dotfiles`, or the live herdr daemon - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
+None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
-The five hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
+The four hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.

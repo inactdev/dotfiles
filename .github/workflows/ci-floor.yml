@@ -17,14 +17,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Every path is listed explicitly rather than by a broad glob so a new
-      # script can't be silently skipped: `work/*.sh` and `home/.local/bin/*`
-      # already sweep in those directories' `.test.sh` suites, but the
-      # root-level ones each have to be named (`run.sh` does not match
-      # `run.test.sh`, nor `install.sh` the two `install.*-test.sh`).
+      # script can't be silently skipped: `work/*.sh` already sweeps in that
+      # directory's `.test.sh` suites, but the root-level ones each have to
+      # be named (`run.sh` does not match `run.test.sh`, nor `install.sh`
+      # the two `install.*-test.sh`). There is deliberately no
+      # `home/.local/bin/*` entry: that directory is empty now that the
+      # firstmate handoff marker is gone, and git tracks no empty
+      # directories, so the glob would reach shellcheck unexpanded as a
+      # literal path and fail the job. Re-add it only alongside a script.
       - name: shellcheck
         run: >-
           shellcheck run.sh run.test.sh install.sh install.test.sh
-          install.container-test.sh work/*.sh home/.local/bin/*
+          install.container-test.sh work/*.sh
 
   # run.test.sh, install.test.sh, and work/codespace-bootstrap.test.sh are
   # pure bash logic tests (host selection, posture detection, the
@@ -47,20 +51,17 @@ jobs:
       - name: bash work/codespace-bootstrap.test.sh
         run: HOME="$(mktemp -d)" bash work/codespace-bootstrap.test.sh
 
-  # work/bootstrap.sh and herdr-agent-handoff-marker only ever run on the
-  # work Mac / personal Mac respectively (see AGENTS.md), and their
-  # `#!/bin/sh` shebang resolves to a genuinely different shell on Linux
-  # (dash) than on macOS (bash in POSIX mode) - macOS is the faithful
-  # runner for these two even though every external command they touch is
-  # mocked.
+  # work/bootstrap.sh only ever runs on the work Mac (see AGENTS.md), and
+  # its `#!/bin/sh` shebang resolves to a genuinely different shell on
+  # Linux (dash) than on macOS (bash in POSIX mode) - macOS is the
+  # faithful runner for it even though every external command it touches
+  # is mocked.
   tests-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: sh work/bootstrap.test.sh
         run: HOME="$(mktemp -d)" sh work/bootstrap.test.sh
-      - name: sh herdr-agent-handoff-marker.test.sh
-        run: HOME="$(mktemp -d)" sh home/.local/bin/herdr-agent-handoff-marker.test.sh
 
   # Eval-only, one explicit `nix eval` per host rather than `nix flake
   # check`: darwinConfigurations/homeConfigurations aren't part of the

@@ -156,22 +156,3 @@ state = "idle"
 priority = 250
 region = "osc_progress"
 regex = ['^4;0']
-
-# --- local override, added 2026-07-31, extended 2026-07-31 ---
-# Claude Code ends its turn (empty prompt box -> "idle") while a backgrounded
-# shell keeps working - e.g. a validation pipeline. That reads as "done" when
-# it isn't. Claude reports this two ways: "N shell(s) still running" on its
-# own line, or "· N shell(s) ·" in the status footer with no "still running"
-# text at all (seen live with concurrent background shells). Match either,
-# anchored on the middot delimiters for the footer form so ordinary prose
-# containing "shells" (seashells, shell scripts, ...) cannot match. Priority
-# sits above live_prompt_box (950).
-[[rules]]
-id = "fm_handed_off_shell_running"
-state = "working"
-priority = 960
-region = "bottom_non_empty_lines(6)"
-visible_working = true
-line_regex = [
-  '(\d+ shells? still running|·\s*\d+\s+shells?\s*·)',
-]
