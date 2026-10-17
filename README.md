@@ -24,7 +24,7 @@ works: `./run.sh help`.
 get the full setup via Nix + home-manager, composed from `modules/`:
 
 - `modules/core.nix` - cross-host CLI tooling (nvim, ripgrep, fd, fzf, jq,
-  node, formatters, git behavior, zsh + aliases, starship, direnv) and the
+  node + fnm, formatters, git behavior, zsh + aliases, starship, direnv) and the
   AGENTS.md/nvim-config symlinks. Every host imports this.
 - `modules/desktop.nix` - ghostty, fonts, git *identity*, and the
   local-machine Claude settings variant (`home/.claude/settings.json`,
