@@ -91,6 +91,7 @@
             home-manager.users.${user} = homeModules [
               ./modules/core.nix
               ./modules/desktop.nix
+              ./modules/fabrica.nix
               ./modules/mac.nix
             ];
           }
@@ -99,8 +100,9 @@
 
       # home-linux: the captain's home Ubuntu 24.04 box. No nix-darwin here -
       # it's a standalone home-manager configuration (not a darwinSystem)
-      # composed from the same modules/core.nix + modules/desktop.nix as
-      # personal-mac, minus modules/mac.nix (Darwin-only: herdr).
+      # composed from the same modules/core.nix + modules/desktop.nix +
+      # modules/fabrica.nix as personal-mac, minus modules/mac.nix
+      # (Darwin-only: herdr).
       # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- switch --flake .#home-linux
       homeConfigurations."home-linux" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
@@ -112,6 +114,7 @@
           (homeModules [
             ./modules/core.nix
             ./modules/desktop.nix
+            ./modules/fabrica.nix
           ])
         ];
       };
@@ -131,8 +134,10 @@
       # modules/codespace.nix still varies by hand (which
       # claude-settings.json, and the `cc` alias) - everything else is
       # identical between the two, including the full modules/core.nix
-      # package set. Work Mac's separate --no-nix path (work/bootstrap.sh)
-      # is a different host entirely and untouched by this.
+      # package set. modules/fabrica.nix is absent the same way, and for a
+      # reason of its own - see that file's header. Work Mac's separate
+      # --no-nix path (work/bootstrap.sh) is a different host entirely and
+      # untouched by this.
       #
       # `user` is NOT the top-level `inactdev` binding above - a codespace
       # runs as its own container user (typically "codespace", never the

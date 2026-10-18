@@ -32,6 +32,9 @@ get the full setup via Nix + home-manager, composed from `modules/`:
   terminal app, or is specific to a machine the captain owns outright.
   `personal-mac` and `home-linux` import this; Codespaces does not, so all
   of it is structurally absent there.
+- `modules/fabrica.nix` - the Fabrica CLI, installed and kept current by
+  home-manager activation (see "Fabrica" below). `personal-mac` and
+  `home-linux` import this; Codespaces does not.
 - `modules/mac.nix` - the herdr config symlink. `personal-mac` only
   (herdr is a Homebrew cask, so it exists nowhere else).
 - `modules/codespace.nix` - the Codespaces-only delta (Claude Code itself,
@@ -40,8 +43,9 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 
 `flake.nix` defines `darwinConfigurations.personal-mac` and
 `homeConfigurations.home-linux`/`.codespace-personal`/`.codespace-work` by
-composing these module files per host (`personal-mac` = core+desktop+mac,
-`home-linux` = core+desktop, each codespace posture = core+codespace).
+composing these module files per host (`personal-mac` =
+core+desktop+fabrica+mac, `home-linux` = core+desktop+fabrica, each
+codespace posture = core+codespace).
 `configuration.nix` adds Darwin-only system settings and Homebrew (for the
 handful of casks/formulas Nix doesn't cover well on macOS, e.g. GUI apps).
 
@@ -58,6 +62,38 @@ declared in `configuration.nix`, including unlisted taps (only
 `homebrew/core` is exempt). Everything in the `brews`/`casks`/`taps` lists
 there is what's meant to survive; if something disappears after a rebuild
 that you wanted kept, add it there rather than re-installing by hand.
+
+### Fabrica
+
+`fabrica update` is still the day-to-day way to move Fabrica forward -
+nothing here replaces it, and nothing here needs running by hand.
+
+What `modules/fabrica.nix` adds is a floor under it. On every activation
+(`./run.sh rebuild`, or a plain `home-manager switch`) on `personal-mac`
+and `home-linux`, `modules/fabrica-sync.sh` reads the tip of
+`master` from `github.com/inactdev/fabrica` with `git ls-remote`,
+compares it against the commit the installed copy was built from (its own
+build info, or failing that what this step recorded the last time it
+installed), and runs `npm install -g github:inactdev/fabrica` only when
+the two differ. Matching commits cost one network read and change
+nothing; a machine with no Fabrica on it at all gets one installed.
+
+Two details worth knowing:
+
+- **It never fails a switch.** Offline, rate-limited, or without
+  credentials for the repo, the step prints a warning saying the
+  installed copy was left alone and activation carries on.
+- **The install is in `~/.npm-global`,** which `home.sessionPath` puts on
+  PATH, rather than in npm's own default global prefix. On a Nix host that
+  default is the read-only `nodejs` store path, where `npm install -g`
+  cannot write at all; the other candidate - whichever prefix fnm's
+  active Node owns - changes with the directory you are standing in. Note
+  the consequence: if you run `fabrica update` (or any `npm install -g`)
+  in a shell where fnm has switched Node, npm installs into *that*
+  version's prefix, and fnm's PATH entry means the copy you get is the one
+  you just installed, not the managed one. That is a question of which
+  file runs rather than which version - both are being pointed at the same
+  `master` - and `which fabrica` answers it.
 
 ## The work host (`--no-nix`)
 
