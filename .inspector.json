@@ -10,5 +10,8 @@
     "work/bootstrap.sh",
     "*.test.sh",
     ".github/**"
+  ],
+  "testPaths": [
+    "*.test.sh"
   ]
 }
