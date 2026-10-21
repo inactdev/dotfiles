@@ -75,7 +75,9 @@ GOBIN=…` set for some other reason cannot move the binary out from under
 the PATH entry the module adds. One consequence to know:
 `modules/core.nix` puts `~/.local/bin` *ahead* of `home.sessionPath`'s
 entries, so an `inspector` dropped there by hand would shadow the managed
-one - `which inspector` answers it.
+one - `which inspector` answers it. (No longer true as of
+`notes/20261021-managed-bin-path-guard.md`: core.nix now puts `~/go/bin`
+ahead of `~/.local/bin`, and the sync script moves a shadowing copy aside.)
 
 **Not in the lint or test lists.** Same gap as Fabrica's script, for the
 same reason: `check.sh`, `.github/**` and `*.test.sh` are protected paths

@@ -27,16 +27,29 @@
 # nowhere at all; see installed_version/last_install below for the one
 # case that does fall back to a recorded value.
 #
-# Run as: inspector-sync <gobin-directory>
+# Installing the right Inspector is only half of it: the one a shell finds
+# has to be that same binary. So whatever this run decides to do - install,
+# skip, or give up - it ends by calling guard_managed_binary (see
+# modules/managed-bin-guard.sh), which moves aside any other Inspector in a
+# directory that could shadow $gobin and says so loudly when one it cannot
+# touch wins anyway. That runs on every path through this script, including
+# the ones that install nothing: an unwatched machine that had nothing to
+# install today is exactly where a stale ~/.local/bin/inspector survives.
+#
+# Run as: inspector-sync <gobin-directory> [guard-library]
 # The directory is passed in rather than hardcoded so modules/inspector.nix
 # holds the single definition of where the managed binary lives (it also
-# puts that directory on PATH). That module runs this with go, git, awk and
-# coreutils put on PATH from the Nix store, so activation never depends on
-# what a login shell happens to have active; run by hand, it uses whatever
-# those names resolve to.
+# puts that directory on PATH). The guard library is passed too because Nix
+# gives each of these files its own store path, so the script cannot find
+# its sibling by looking next to itself; the default is for running this by
+# hand out of a checkout. That module runs this with go, git, awk, bash,
+# zsh and coreutils put on PATH from the Nix store, so activation never
+# depends on what a login shell happens to have active; run by hand, it
+# uses whatever those names resolve to.
 set -euo pipefail
 
-gobin=${1:?usage: inspector-sync <gobin-directory>}
+gobin=${1:?usage: inspector-sync <gobin-directory> [guard-library]}
+guard_lib=${2:-$(dirname "$0")/managed-bin-guard.sh}
 
 repo_url=https://github.com/inactdev/inspector.git
 pkg_path=github.com/inactdev/inspector/cmd/inspector
@@ -99,65 +112,89 @@ last_install() {
   cat "$state_file" 2>/dev/null
 }
 
-# Read the remote tip. GIT_TERMINAL_PROMPT=0 so a host without credentials
-# for the repository fails instead of blocking a non-interactive switch on
-# a username prompt, and the low-speed settings so a half-open connection
-# gives up in seconds rather than hanging the activation.
-if ! ls_remote=$(
-  GIT_TERMINAL_PROMPT=0 git \
-    -c http.lowSpeedLimit=1000 \
-    -c http.lowSpeedTime=15 \
-    ls-remote "$repo_url" "refs/heads/$branch" 2>&1
-); then
-  warn "could not read $branch from $repo_url, so the installed copy is left as it is."
-  warn "git said: $ls_remote"
-  exit 0
-fi
+# Everything the install decision needs, as one function rather than as the
+# top level of the script: every "nothing more to do here" below is a
+# `return 0`, so the shadowing guard at the tail still runs after it. An
+# `exit 0` would skip the guard on exactly the quiet paths - already
+# current, no network - where a shadowing copy goes unnoticed longest.
+sync_to_remote_tip() {
+  local ls_remote remote_commit current_version current_revision installed
 
-remote_commit=${ls_remote%%[[:space:]]*}
-if ! is_full_commit "$remote_commit"; then
-  warn "no commit for $branch at $repo_url, so the installed copy is left as it is."
-  exit 0
-fi
-
-current_version=$(installed_version)
-current_revision=$(revision_of "$current_version")
-
-if [ -n "$current_revision" ]; then
-  if [ "$current_revision" = "${remote_commit:0:12}" ]; then
-    say "already on $branch ($current_version), nothing to install."
-    exit 0
+  # Read the remote tip. GIT_TERMINAL_PROMPT=0 so a host without
+  # credentials for the repository fails instead of blocking a
+  # non-interactive switch on a username prompt, and the low-speed
+  # settings so a half-open connection gives up in seconds rather than
+  # hanging the activation.
+  if ! ls_remote=$(
+    GIT_TERMINAL_PROMPT=0 git \
+      -c http.lowSpeedLimit=1000 \
+      -c http.lowSpeedTime=15 \
+      ls-remote "$repo_url" "refs/heads/$branch" 2>&1
+  ); then
+    warn "could not read $branch from $repo_url, so the installed copy is left as it is."
+    warn "git said: $ls_remote"
+    return 0
   fi
-elif [ -n "$current_version" ] && [ "$(last_install)" = "$current_version $remote_commit" ]; then
-  say "already on $branch ($current_version at $remote_commit), nothing to install."
-  exit 0
-fi
 
-say "installing $pkg_path@$remote_commit into $gobin (have: ${current_version:-nothing installed})"
+  remote_commit=${ls_remote%%[[:space:]]*}
+  if ! is_full_commit "$remote_commit"; then
+    warn "no commit for $branch at $repo_url, so the installed copy is left as it is."
+    return 0
+  fi
 
-# GOBIN pins where the binary lands, so it matches the PATH entry
-# modules/inspector.nix adds, whatever GOPATH or GOBIN the machine's own
-# `go env` happens to say. GOPRIVATE keeps the fetch off the public proxy
-# and checksum database and on the repository itself, which is what `go
-# help private` prescribes for a module that is not publicly available -
-# so this keeps working if inspector is ever private, and costs nothing
-# while it is public, since the commit being installed was just read from
-# that same repository over the same transport. Only inactdev's own
-# modules are matched, so any dependency still goes through the proxy and
-# is still checksum-verified. GIT_TERMINAL_PROMPT=0 for the same reason as
-# above: go fetches with git, and a credential prompt must never be able
-# to block a switch.
-if ! GOBIN=$gobin \
-  GOPRIVATE='github.com/inactdev/*' \
-  GIT_TERMINAL_PROMPT=0 \
-  go install "$pkg_path@$remote_commit"; then
-  warn "go install $pkg_path@$remote_commit failed, so Inspector was not updated."
-  warn "re-run the switch once the cause is cleared."
-  exit 0
-fi
+  current_version=$(installed_version)
+  current_revision=$(revision_of "$current_version")
 
-installed=$(installed_version)
-if ! (mkdir -p "$state_dir" && printf '%s %s\n' "$installed" "$remote_commit" >"$state_file"); then
-  warn "installed $remote_commit but could not record it in $state_file;"
-  warn "harmless - the record is only consulted for a tagged release (see the comments)."
+  if [ -n "$current_revision" ]; then
+    if [ "$current_revision" = "${remote_commit:0:12}" ]; then
+      say "already on $branch ($current_version), nothing to install."
+      return 0
+    fi
+  elif [ -n "$current_version" ] && [ "$(last_install)" = "$current_version $remote_commit" ]; then
+    say "already on $branch ($current_version at $remote_commit), nothing to install."
+    return 0
+  fi
+
+  say "installing $pkg_path@$remote_commit into $gobin (have: ${current_version:-nothing installed})"
+
+  # GOBIN pins where the binary lands, so it matches the PATH entry
+  # modules/inspector.nix adds, whatever GOPATH or GOBIN the machine's own
+  # `go env` happens to say. GOPRIVATE keeps the fetch off the public proxy
+  # and checksum database and on the repository itself, which is what `go
+  # help private` prescribes for a module that is not publicly available -
+  # so this keeps working if inspector is ever private, and costs nothing
+  # while it is public, since the commit being installed was just read from
+  # that same repository over the same transport. Only inactdev's own
+  # modules are matched, so any dependency still goes through the proxy and
+  # is still checksum-verified. GIT_TERMINAL_PROMPT=0 for the same reason as
+  # above: go fetches with git, and a credential prompt must never be able
+  # to block a switch.
+  if ! GOBIN=$gobin \
+    GOPRIVATE='github.com/inactdev/*' \
+    GIT_TERMINAL_PROMPT=0 \
+    go install "$pkg_path@$remote_commit"; then
+    warn "go install $pkg_path@$remote_commit failed, so Inspector was not updated."
+    warn "re-run the switch once the cause is cleared."
+    return 0
+  fi
+
+  installed=$(installed_version)
+  if ! (mkdir -p "$state_dir" && printf '%s %s\n' "$installed" "$remote_commit" >"$state_file"); then
+    warn "installed $remote_commit but could not record it in $state_file;"
+    warn "harmless - the record is only consulted for a tagged release (see the comments)."
+  fi
+  return 0
+}
+
+sync_to_remote_tip
+
+# The guard is sourced this late, and its absence is survivable, for the
+# same reason every other failure here is: a missing library is worth a
+# warning, not a lost activation.
+if [ -r "$guard_lib" ]; then
+  # shellcheck source=./managed-bin-guard.sh
+  . "$guard_lib"
+  guard_managed_binary inspector "$bin"
+else
+  warn "no shadowing guard at $guard_lib, so nothing checked which inspector a login shell finds."
 fi
