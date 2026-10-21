@@ -35,6 +35,9 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 - `modules/fabrica.nix` - the Fabrica CLI, installed and kept current by
   home-manager activation (see "Fabrica" below). `personal-mac` and
   `home-linux` import this; Codespaces does not.
+- `modules/inspector.nix` - the Inspector CLI, installed and kept current
+  by home-manager activation the same way (see "Inspector" below).
+  `personal-mac` and `home-linux` import this; Codespaces does not.
 - `modules/mac.nix` - the herdr config symlink. `personal-mac` only
   (herdr is a Homebrew cask, so it exists nowhere else).
 - `modules/codespace.nix` - the Codespaces-only delta (Claude Code itself,
@@ -44,8 +47,8 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 `flake.nix` defines `darwinConfigurations.personal-mac` and
 `homeConfigurations.home-linux`/`.codespace-personal`/`.codespace-work` by
 composing these module files per host (`personal-mac` =
-core+desktop+fabrica+mac, `home-linux` = core+desktop+fabrica, each
-codespace posture = core+codespace).
+core+desktop+fabrica+inspector+mac, `home-linux` =
+core+desktop+fabrica+inspector, each codespace posture = core+codespace).
 `configuration.nix` adds Darwin-only system settings and Homebrew (for the
 handful of casks/formulas Nix doesn't cover well on macOS, e.g. GUI apps).
 
@@ -94,6 +97,41 @@ Two details worth knowing:
   you just installed, not the managed one. That is a question of which
   file runs rather than which version - both are being pointed at the same
   `master` - and `which fabrica` answers it.
+
+### Inspector
+
+`modules/inspector.nix` is the same floor under Inspector that
+`modules/fabrica.nix` is under Fabrica, and likewise needs nothing run by
+hand. On every activation (`./run.sh rebuild`, or a plain `home-manager
+switch`) on `personal-mac` and `home-linux`,
+`modules/inspector-sync.sh` reads the tip of `main` from
+`github.com/inactdev/inspector` with `git ls-remote`, compares it against
+the module version baked into the installed binary, and runs `go install
+github.com/inactdev/inspector/cmd/inspector@<that commit>` only when the
+two differ. A match costs one network read and changes nothing; a machine
+with no Inspector on it at all gets one installed.
+
+Three details worth knowing:
+
+- **It never fails a switch.** Offline, rate-limited, or without
+  credentials for the repo, the step prints a warning saying the
+  installed copy was left alone and activation carries on. Same for a
+  `go install` that fails for any reason of its own.
+- **Nothing has to be recorded to make the comparison work.** Unlike
+  npm, `go install <pkg>@<commit>` writes the version it resolved into
+  the binary, and `go version -m` reads it back: an untagged commit
+  resolves to a pseudo-version ending in the commit's first 12
+  characters, so the installed revision is simply there to be read. (The
+  one case that would not be - a commit carrying a semver tag, which
+  resolves to the tag instead - is covered by a line the step writes
+  under `$XDG_STATE_HOME/inspector-sync/`, so even then it reinstalls
+  once rather than on every switch. See
+  `notes/20261021-inspector-home-manager-install.md`.)
+- **The binary goes to `~/go/bin`,** Go's own default `GOBIN`, which
+  `home.sessionPath` puts on PATH - so anything else you have
+  `go install`ed is already there too. Note that `modules/core.nix` adds
+  `~/.local/bin` to PATH ahead of it, so an `inspector` placed there by
+  hand would win; `which inspector` answers which copy you are running.
 
 ## The work host (`--no-nix`)
 
