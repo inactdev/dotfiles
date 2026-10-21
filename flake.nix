@@ -53,6 +53,17 @@
           throw "codespace-personal/codespace-work need USER set in the evaluating environment - evaluate or build them with --impure"
         else
           envUser;
+      # The container user install.container-test.sh creates for the
+      # ci-linux rehearsal below. A hardcoded literal rather than
+      # builtins.getEnv "USER" (which the codespace outputs have no choice
+      # about) on purpose, for two reasons: this output then evaluates
+      # without --impure-only environment reads wherever CI checks it, and
+      # the flake and the rehearsal cannot drift apart about which home
+      # directory is being activated - home-manager aborts outright when
+      # $HOME is not the home.homeDirectory it was evaluated with, so the
+      # name here and the `useradd` in install.container-test.sh have to
+      # stay the same string.
+      ciUser = "ci-activation";
       # The two codespace outputs differ only in the posture string handed
       # to modules/codespace.nix - see the codespace comment block below.
       mkCodespace =
@@ -156,10 +167,60 @@
       homeConfigurations."codespace-personal" = mkCodespace "personal";
       homeConfigurations."codespace-work" = mkCodespace "work";
 
+      # ci-linux: not a machine anybody uses - the host
+      # install.container-test.sh activates for real, with an actual
+      # `home-manager switch`, inside its disposable ubuntu container
+      # against a throwaway user's scratch HOME.
+      #
+      # It exists because eval coverage and hermetic bash tests are not
+      # enough for modules/fabrica.nix and modules/inspector.nix. Both of
+      # those contribute an activation *step*, and a step's command line is
+      # only ever interpreted by a shell at activation time: their steps
+      # began with `$DRY_RUN_CMD PATH=...:$PATH bash ...`, which every test
+      # in this repo was happy with and which failed on every real switch,
+      # because the empty `$DRY_RUN_CMD` left `PATH=...` as the command
+      # name. Nothing short of running the activation catches that, so this
+      # host is what CI runs it against.
+      #
+      # modules/core.nix + modules/fabrica.nix + modules/inspector.nix +
+      # modules/linux.nix, deliberately: the two modules under test, the
+      # one they share their PATH ordering with, and the other Linux-only
+      # module a home-linux activation would carry. No modules/desktop.nix
+      # and nothing Darwin-only or secret-dependent, so the activation
+      # needs no credentials, no fonts, and no git identity. One
+      # consequence worth knowing: modules/linux.nix's systemd user unit
+      # points at ~/.local/bin/dotfiles-auto-apply, which
+      # modules/desktop.nix is what normally symlinks - on this host the
+      # unit is written with no such file behind it, which is harmless
+      # because the container has no systemd user session to start it with
+      # (both that module's own activation step and home-manager's
+      # reloadSystemd check for one and skip).
+      #
+      # NOT the "personal-mac minus Homebrew" CI host the note below still
+      # describes, and not a substitute for it: this one is scoped to
+      # proving the activation steps run.
+      homeConfigurations."ci-linux" = home-manager.lib.homeManagerConfiguration {
+        pkgs = import nixpkgs {
+          system = "x86_64-linux";
+          config.allowUnfree = true;
+        };
+        extraSpecialArgs = { user = ciUser; };
+        modules = [
+          (homeModules [
+            ./modules/core.nix
+            ./modules/fabrica.nix
+            ./modules/inspector.nix
+            ./modules/linux.nix
+          ])
+        ];
+      };
+
       # The "work" host is NOT a Nix host - it's the brew-only --no-nix path
       # under work/ (see README.md), so it never appears here. There is no
       # work-linux host either: GitHub Codespaces (see install.sh) covers
       # work-on-Linux instead.
-      # Later: "ci" host goes here (personal-mac minus Homebrew) for GitHub Actions.
+      # Later: a full "ci" host goes here (personal-mac minus Homebrew) for
+      # GitHub Actions - distinct from ci-linux above, which is scoped to
+      # activating the Fabrica/Inspector steps for real.
     };
 }

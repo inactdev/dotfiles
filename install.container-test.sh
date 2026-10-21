@@ -14,6 +14,14 @@
 # (personal) and work/codespace-bootstrap.sh (work), so this is the only
 # place that actually exercises either end to end.
 #
+# One section at the tail is not about install.sh at all: it reuses the
+# same container (and the Nix the personal-posture install put in it) to
+# run a real `home-manager switch` of flake.nix's
+# homeConfigurations."ci-linux", as a separate throwaway user with a
+# scratch HOME. That is the only check anywhere in this repo that actually
+# executes modules/fabrica.nix's and modules/inspector.nix's activation
+# steps - see the comment block above it for why nothing cheaper can.
+#
 # Requires Docker. Usage: bash install.container-test.sh
 set -uo pipefail
 
@@ -22,6 +30,13 @@ IMAGE="ubuntu:24.04"
 CONTAINER="dotfiles-install-rehearsal-$$"
 BUNDLE_DIR="$(mktemp -d)"
 BUNDLE="$BUNDLE_DIR/dotfiles.bundle"
+# The container user the ci-linux activation at the tail of this script
+# runs as. This string MUST equal flake.nix's `ciUser`: home-manager
+# refuses to activate when $HOME is not the home.homeDirectory its
+# configuration was evaluated with, and that option is derived from the
+# username in modules/core.nix.
+CI_USER="ci-activation"
+CI_HOME="/home/$CI_USER"
 
 pass_count=0
 fail_count=0
@@ -62,15 +77,31 @@ echo "==> starting rehearsal container ($IMAGE, linux/amd64)"
 # on, so relaxing it here is fine.
 docker run -d --platform linux/amd64 --security-opt seccomp=unconfined --name "$CONTAINER" "$IMAGE" sleep infinity >/dev/null
 
+# gcc is for the $CI_USER section at the tail of this script, not for
+# either posture: modules/inspector.nix's activation step runs `go
+# install`, and Go leaves CGO_ENABLED on by default, so a module that
+# touches cgo anywhere in its tree needs a C compiler. Every real host this
+# profile targets has one (clang from the Xcode command line tools on
+# macOS, gcc from apt on the home Ubuntu box) - a bare ubuntu:24.04 is the
+# only place that would not, and a rehearsal failing for a reason no real
+# machine has would be noise rather than a finding.
 docker exec "$CONTAINER" bash -c '
   set -e
   apt-get update -y >/tmp/apt.log 2>&1
-  apt-get install -y --no-install-recommends sudo curl git ca-certificates xz-utils >>/tmp/apt.log 2>&1
+  apt-get install -y --no-install-recommends sudo curl git ca-certificates xz-utils gcc >>/tmp/apt.log 2>&1
   for u in codespace-personal codespace-work; do
     useradd -m -s /bin/bash "$u"
     echo "$u ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$u"
   done
 '
+
+# $CI_USER is created separately from the two posture users and used only
+# at the tail of this script. Deliberately no sudoers entry: the ci-linux
+# activation is a plain user-level home-manager switch against the
+# nix-daemon the personal-posture install already started, and withholding
+# root is one more way this section cannot disturb anything the posture
+# assertions above depend on.
+docker exec "$CONTAINER" useradd -m -s /bin/bash "$CI_USER"
 
 # git bundle, not a plain COPY/cp: this repo is normally checked out as a
 # linked worktree whose .git is a pointer file to an absolute host path
@@ -81,7 +112,7 @@ git -C "$SCRIPT_DIR" bundle create "$BUNDLE" HEAD >/dev/null
 ORIGIN_URL="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "https://github.com/inactdev/dotfiles.git")"
 docker cp "$BUNDLE" "$CONTAINER:/tmp/dotfiles.bundle" >/dev/null
 
-for user in codespace-personal codespace-work; do
+for user in codespace-personal codespace-work "$CI_USER"; do
   docker exec -u "$user" "$CONTAINER" bash -c "
     set -e
     git clone -q /tmp/dotfiles.bundle ~/dotfiles-src
@@ -380,6 +411,165 @@ work_checkout_is_clean() {
 }
 assert "work posture never writes back into its own checkout (e.g. through the ~/.zshrc symlink)" \
   work_checkout_is_clean
+
+# --- real activation of the Fabrica/Inspector steps (ci-linux host) ---------
+# Everything above this line is about install.sh. This section is about
+# something install.sh never touches: the two activation steps in
+# modules/fabrica.nix and modules/inspector.nix, which no codespace host
+# composes (see those files) and which therefore had no CI coverage of any
+# kind beyond `nix eval`.
+#
+# They needed it. Both began with `$DRY_RUN_CMD PATH=...:$PATH bash ...`,
+# and a shell only treats `PATH=...` as an assignment when it is the first
+# word at parse time - so on every real switch, where $DRY_RUN_CMD expands
+# to nothing, `PATH=/nix/store/...` became the command name and the step
+# died before reaching the sync script. Neither script had ever run on a
+# real machine, and every hermetic test in this repo passed throughout. An
+# activation step's command line is only interpreted by a shell at
+# activation time, so the only check that can see this is a real
+# `home-manager switch` - which is what happens below, against
+# flake.nix's homeConfigurations."ci-linux".
+#
+# Three things about where this sits:
+#
+#   - last, because it needs the Nix that the personal-posture install
+#     above put in this container (and the nix-daemon that install.sh
+#     started), and because it must not perturb any assertion before it.
+#   - as its own container user with its own scratch HOME, because a
+#     second home-manager generation over codespace-personal's HOME would
+#     replace the profile every personal-posture assertion above is about.
+#   - with no stubbing of either install. Both repositories are public, the
+#     container has network, and pointing the steps at fixtures would
+#     recreate the exact failure mode this section exists to end: a test
+#     that passes while the real thing does not run.
+CI_HOST_LOG="$BUNDLE_DIR/ci-linux-activation.log"
+echo "==> activating homeConfigurations.ci-linux for real (scratch HOME, throwaway container user)"
+# ~/.dotfiles is what modules/core.nix's out-of-store symlinks resolve
+# through, set up here the same way install.sh does it for a codespace.
+# Sourcing nix-daemon.sh rather than calling the store path directly: it is
+# also what sets NIX_SSL_CERT_FILE, which the flake fetch needs.
+#
+# --impure is not something this host needs - unlike the two codespace
+# outputs, nothing in ci-linux reads the environment, which is exactly why
+# flake.nix gives it a hardcoded `ciUser`. It is passed because flake.nix's
+# `codespaceUser` throws under pure evaluation, so any future
+# home-manager/Nix version that forces more of the outputs attrset than the
+# one path asked for would fail here for an unrelated host's reason. The
+# flag costs nothing and removes that coupling.
+docker exec -u "$CI_USER" "$CONTAINER" bash -c '
+  set -euo pipefail
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  ln -sfn "$HOME/dotfiles-src" "$HOME/.dotfiles"
+  nix run github:nix-community/home-manager/release-26.05#home-manager -- \
+    -b hm-backup switch --flake "$HOME/.dotfiles#ci-linux" --impure
+' >"$CI_HOST_LOG" 2>&1
+CI_HOST_STATUS=$?
+cat "$CI_HOST_LOG"
+
+assert "ci-linux: home-manager switch exits 0" [ "$CI_HOST_STATUS" -eq 0 ]
+
+# A zero exit is necessary and nowhere near sufficient. Both steps end in
+# `|| echo "<tool>-sync exited non-zero; continuing activation."` entirely
+# on purpose - keeping either tool current is never worth losing the rest
+# of an activation over - so the broken version of these steps exited 0
+# too, every time, having done nothing. That backstop firing is the
+# step-level failure signal.
+neither_sync_step_hit_its_backstop() {
+  ! grep -qE -- '-sync exited non-zero; continuing activation' "$CI_HOST_LOG"
+}
+assert "ci-linux: neither sync step hit its non-zero backstop" \
+  neither_sync_step_hit_its_backstop
+
+# The regression by its own signature, generalized one notch: a shell
+# reporting a `VAR=value` word as a command it cannot find. Deliberately
+# not a bare search for "No such file or directory", which git, go, npm or
+# any other tool a step legitimately runs is entitled to print about
+# something of its own; requiring the assignment-shaped word on the same
+# line is what makes this specific to the bug and not to the phrase.
+no_assignment_was_run_as_a_command() {
+  ! grep -qE -- '[A-Za-z_][A-Za-z0-9_]*=[^ ]*: No such file or directory' "$CI_HOST_LOG"
+}
+assert "ci-linux: no VAR=value word was executed as a command name" \
+  no_assignment_was_run_as_a_command
+
+# Proof the scripts ran at all. Every line either sync script prints is
+# prefixed with its own name, so a log with no such prefix means the step
+# never got as far as the interpreter - the precise symptom of the bug
+# above, and the one thing no amount of exit-status checking reveals.
+assert "ci-linux: fabrica-sync reported for itself during activation" \
+  grep -q "fabrica-sync:" "$CI_HOST_LOG"
+assert "ci-linux: inspector-sync reported for itself during activation" \
+  grep -q "inspector-sync:" "$CI_HOST_LOG"
+
+# Proof they did real work rather than finding themselves already current:
+# this HOME is brand new, so "installing" is the only correct thing either
+# step can say on it.
+assert "ci-linux: fabrica-sync installed rather than skipping (fresh HOME)" \
+  grep -q "fabrica-sync: installing" "$CI_HOST_LOG"
+assert "ci-linux: inspector-sync installed rather than skipping (fresh HOME)" \
+  grep -q "inspector-sync: installing" "$CI_HOST_LOG"
+
+# And the check that matters most: the tools are actually there afterwards,
+# at the two paths modules/managed-paths.nix names and modules/core.nix
+# puts on PATH ahead of ~/.local/bin.
+managed_tool_installed() {
+  local relative_path="$1"
+  docker exec -u "$CI_USER" "$CONTAINER" bash -c "[ -x \"\$HOME/$relative_path\" ]"
+}
+assert "ci-linux: the Inspector step installed an executable ~/go/bin/inspector" \
+  managed_tool_installed go/bin/inspector
+assert "ci-linux: the Fabrica step installed an executable ~/.npm-global/bin/fabrica" \
+  managed_tool_installed .npm-global/bin/fabrica
+
+# Right path, right binary. `go version -m` reads the module path out of
+# the binary's own build info - the same source modules/inspector-sync.sh
+# compares against origin/main - so this distinguishes the Inspector the
+# step installed from anything that merely has the right filename.
+inspector_binary_is_upstream_inspector() {
+  # go comes from the home-manager profile this activation just built
+  # (modules/core.nix installs it), so the profile's bin directory goes on
+  # PATH first; sourcing hm-session-vars.sh as well covers a Nix that puts
+  # the profile somewhere other than ~/.nix-profile.
+  docker exec -u "$CI_USER" "$CONTAINER" bash -c '
+    . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" 2>/dev/null
+    PATH="$HOME/.nix-profile/bin:$PATH"
+    go version -m "$HOME/go/bin/inspector"
+  ' 2>/dev/null | grep -q "github.com/inactdev/inspector"
+}
+assert "ci-linux: ~/go/bin/inspector carries github.com/inactdev/inspector build info" \
+  inspector_binary_is_upstream_inspector
+
+# The npm equivalent: the bin entry has to resolve into the package npm
+# installed under the managed prefix, which is what proves the global
+# install landed there rather than the name happening to exist.
+fabrica_bin_resolves_into_the_managed_prefix() {
+  local resolved
+  resolved="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    'readlink -f "$HOME/.npm-global/bin/fabrica"' 2>/dev/null)"
+  case "$resolved" in
+    "$CI_HOME/.npm-global/lib/node_modules/fabrica/"*) return 0 ;;
+    *)
+      echo "  fabrica resolved to: ${resolved:-<not found>}" >&2
+      return 1
+      ;;
+  esac
+}
+assert "ci-linux: ~/.npm-global/bin/fabrica resolves into the managed npm prefix" \
+  fabrica_bin_resolves_into_the_managed_prefix
+
+# Finally, the guarantee the two steps exist to provide, taken from the
+# steps' own output: modules/managed-bin-guard.sh asks a fresh login shell
+# what it resolves each tool to, and names the shells that answer with the
+# managed copy. A fresh *bash* login shell is expected not to - only zsh
+# gets the PATH line in modules/core.nix - so this matches the success
+# line, not the absence of warnings.
+login_shell_runs_managed() {
+  grep -q "a fresh login shell runs the managed $1" "$CI_HOST_LOG"
+}
+assert "ci-linux: a fresh login shell resolves inspector to the managed copy" \
+  login_shell_runs_managed inspector
+assert "ci-linux: a fresh login shell resolves fabrica to the managed copy" \
+  login_shell_runs_managed fabrica
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

@@ -93,3 +93,11 @@ jobs:
         run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).homeConfigurations.codespace-personal.activationPackage.drvPath'
       - name: nix eval homeConfigurations.codespace-work (eval only)
         run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).homeConfigurations.codespace-work.activationPackage.drvPath'
+      # ci-linux is the host install-container-test.yml activates for real
+      # (see flake.nix). Eval-checked here alongside the others so a broken
+      # module set is caught by the cheap floor rather than only by the
+      # container job - but note that evaluating it is explicitly NOT the
+      # check that matters for it: its whole reason to exist is that an
+      # activation step's command line is never interpreted at eval time.
+      - name: nix eval homeConfigurations.ci-linux (eval only)
+        run: nix eval --impure --expr '(builtins.getFlake (toString ./.)).homeConfigurations.ci-linux.activationPackage.drvPath'

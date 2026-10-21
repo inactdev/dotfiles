@@ -80,8 +80,17 @@ in
   # the rest of an activation over. PATH is set here rather than inside
   # the script so the store paths stay declared where every other
   # Nix-level dependency in this repo is declared.
+  #
+  # `env` sets that PATH, for the reason spelled out in full above the
+  # matching line in modules/fabrica.nix: a bare leading `PATH=...` is only
+  # an assignment when it is the first word at parse time, so prefixing it
+  # with anything that can expand to nothing (`$DRY_RUN_CMD`, as this line
+  # did) or that dispatches through `"$@"` (`run`, which replaces it) turns
+  # it into the command name instead. `run` is the supported replacement
+  # for the deprecated `$DRY_RUN_CMD`; `env` is what makes the assignment
+  # real wherever it sits in the argument list.
   home.activation.installInspector = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    $DRY_RUN_CMD PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
+    run ${pkgs.coreutils}/bin/env PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
       ${inspectorSync} ${lib.escapeShellArg goBin} ${managedBinGuard} \
       || echo "inspector-sync exited non-zero; continuing activation." >&2
   '';

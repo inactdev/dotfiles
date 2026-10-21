@@ -78,8 +78,26 @@ in
   # rest of an activation over. PATH is set here rather than inside the
   # script so the store paths stay declared where every other Nix-level
   # dependency in this repo is declared.
+  #
+  # `env` sets that PATH, and the two details about this line are both
+  # load-bearing:
+  #
+  #   - `run` rather than the deprecated `$DRY_RUN_CMD` prefix, which
+  #     home-manager keeps only for backward compatibility. `run` executes
+  #     its arguments, echoing them instead on a dry run.
+  #   - `env`, not a bare leading `PATH=...` word. A shell only treats
+  #     `PATH=...` as an assignment when it is the first word *at parse
+  #     time*, so `$DRY_RUN_CMD PATH=... bash ...` left `PATH=...` standing
+  #     as the command name the moment DRY_RUN_CMD expanded to nothing -
+  #     which is every real switch - and the step died with
+  #     `PATH=/nix/store/...: No such file or directory` before the sync
+  #     script was ever reached. `run` would do the same thing for the same
+  #     reason: it dispatches through `"$@"`, so a leading `PATH=...` is an
+  #     argument, not an assignment. `env` is what actually applies it.
+  #     install.container-test.sh activates this step for real on Linux so
+  #     that a return to either shape fails CI instead of passing it.
   home.activation.installFabrica = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    $DRY_RUN_CMD PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
+    run ${pkgs.coreutils}/bin/env PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
       ${fabricaSync} ${lib.escapeShellArg npmPrefix} ${managedBinGuard} \
       || echo "fabrica-sync exited non-zero; continuing activation." >&2
   '';
