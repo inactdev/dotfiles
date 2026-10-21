@@ -20,22 +20,25 @@ jobs:
       # script can't be silently skipped: `work/*.sh` already sweeps in that
       # directory's `.test.sh` suites, but the root-level ones each have to
       # be named (`run.sh` does not match `run.test.sh`, nor `install.sh`
-      # the two `install.*-test.sh`). There is deliberately no
-      # `home/.local/bin/*` entry: that directory is empty now that the
-      # firstmate handoff marker is gone, and git tracks no empty
-      # directories, so the glob would reach shellcheck unexpanded as a
-      # literal path and fail the job. Re-add it only alongside a script.
+      # the two `install.*-test.sh`). `home/.local/bin/*` is back now that
+      # that directory has a script in it again (dotfiles-auto-apply and its
+      # suite) - it was dropped while the directory was empty, because git
+      # tracks no empty directories and the glob would have reached
+      # shellcheck unexpanded as a literal path and failed the job. It is a
+      # glob rather than two names on purpose: the script itself carries no
+      # `.sh` extension, so anything narrower would skip it.
       - name: shellcheck
         run: >-
           shellcheck run.sh run.test.sh install.sh install.test.sh
-          install.container-test.sh work/*.sh
+          install.container-test.sh work/*.sh home/.local/bin/*
 
-  # run.test.sh, install.test.sh, and work/codespace-bootstrap.test.sh are
-  # pure bash logic tests (host selection, posture detection, the
-  # codespace-work apt/npm/binary install logic against mocked
-  # apt-get/curl/npm) with no macOS-only dependency - Ubuntu is cheaper and
-  # sufficient. All three isolate HOME internally, but the step also sets
-  # a scratch HOME itself as defense in depth: run.sh historically
+  # run.test.sh, install.test.sh, work/codespace-bootstrap.test.sh and
+  # home/.local/bin/dotfiles-auto-apply.test.sh are pure bash logic tests
+  # (host selection, posture detection, the codespace-work apt/npm/binary
+  # install logic against mocked apt-get/curl/npm, the self-apply job
+  # against a mocked git/run.sh) with no macOS-only dependency - Ubuntu is
+  # cheaper and sufficient. All of them isolate HOME internally, but each
+  # step also sets a scratch HOME itself as defense in depth: run.sh once
   # repointed ~/.dotfiles unconditionally (issue #9, since fixed by its
   # link_dotfiles guard), so this job must never rely on the runner being
   # disposable - a scratch HOME keeps the same workflow safe under `act`
@@ -50,6 +53,8 @@ jobs:
         run: HOME="$(mktemp -d)" bash install.test.sh
       - name: bash work/codespace-bootstrap.test.sh
         run: HOME="$(mktemp -d)" bash work/codespace-bootstrap.test.sh
+      - name: bash home/.local/bin/dotfiles-auto-apply.test.sh
+        run: HOME="$(mktemp -d)" bash home/.local/bin/dotfiles-auto-apply.test.sh
 
   # work/bootstrap.sh only ever runs on the work Mac (see AGENTS.md), and
   # its `#!/bin/sh` shebang resolves to a genuinely different shell on

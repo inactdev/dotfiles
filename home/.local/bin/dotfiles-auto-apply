@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+#
+# dotfiles-auto-apply - keep this machine's dotfiles applied without anyone
+# having to remember to apply them.
+#
+# Fetches ~/.dotfiles' origin and, when origin/master has moved ahead of a
+# clean master checkout, fast-forwards to it and applies the result with
+# `./run.sh rebuild`. The OS schedules it - every 30 minutes and once at
+# login - from a launchd user agent on personal-mac (modules/mac.nix) and a
+# systemd user timer on home-linux (modules/linux.nix). Nothing else runs
+# it, and nothing has to: it is also on PATH as `dotfiles-auto-apply`
+# (modules/desktop.nix symlinks it into ~/.local/bin) for a run by hand.
+#
+# The rules, in the order they matter:
+#
+#   - It never touches a dirty checkout. Any staged or unstaged change, and
+#     any untracked file git does not ignore, stops the run before the
+#     fast-forward: nothing is merged, nothing is applied, the log says what
+#     is in the way. A HEAD that is not master stops it the same way.
+#   - It only ever fast-forwards. A master that has genuinely diverged from
+#     origin/master is never merged, rebased or reset - that one notifies
+#     and exits non-zero, because only a human can resolve it.
+#   - It never leaves the machine quietly behind. The commit of the last
+#     successful rebuild is recorded, so a rebuild that failed is retried on
+#     the next run instead of being forgotten the moment the checkout has
+#     caught up with the fetch.
+#   - Every failure is logged and exits non-zero. The two that need a human
+#     - a failed rebuild and a real divergence - also raise a desktop
+#     notification, but only where one can be delivered: the notifier is
+#     looked up at runtime (osascript, then notify-send), so this same
+#     script is correct on the captain's Mac and on a headless cloud box
+#     with no D-Bus session, where the log and journald are the record.
+#
+# Every line goes both to $log_file and to stdout, which the scheduler
+# captures too (launchd's StandardOutPath, journald on Linux). See
+# notes/20261021-dotfiles-auto-apply.md for why those are two different
+# files, why the unit files point at stable paths rather than store paths,
+# and what the Mac needs from sudo before any of this works there.
+set -euo pipefail
+
+repo=$HOME/.dotfiles
+branch=master
+remote=origin
+remote_ref=refs/remotes/$remote/$branch
+
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-auto
+log_file=$state_dir/apply.log
+state_file=$state_dir/last-applied
+log_max_lines=2000
+
+# --- log, notify ------------------------------------------------------
+
+if ! mkdir -p "$state_dir"; then
+  echo "dotfiles-auto-apply: cannot create $state_dir, so there is nowhere to log; giving up." >&2
+  exit 1
+fi
+
+# One line, appended (never held open) so the trim below can rename the
+# file out from under nothing. Also echoed to stdout for the scheduler's
+# own capture. A log write that fails must not take the run down with it -
+# the rebuild matters more than its record.
+log() {
+  local line
+  line="$(date '+%Y-%m-%dT%H:%M:%S%z') dotfiles-auto-apply: $*"
+  printf '%s\n' "$line"
+  printf '%s\n' "$line" >>"$log_file" || true
+}
+
+warn() {
+  local line
+  line="$(date '+%Y-%m-%dT%H:%M:%S%z') dotfiles-auto-apply: $*"
+  printf '%s\n' "$line" >&2
+  printf '%s\n' "$line" >>"$log_file" || true
+}
+
+# Keeps the log to its last $log_max_lines, on every exit path (see the trap
+# below) rather than only the happy one. Writing a tail to a temp file and
+# renaming it is why nothing may hold the log open: a scheduler told to
+# capture stdout into this same path would keep writing to the unlinked
+# inode afterwards, which is why launchd is pointed at ~/Library/Logs
+# instead. Never fails the run - a log that could not be trimmed is a log
+# that is merely too long.
+trim_log() {
+  [ -f "$log_file" ] || return 0
+  local tmp=$log_file.trim
+  if tail -n "$log_max_lines" "$log_file" >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$log_file" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+  return 0
+}
+
+trap 'trim_log || true' EXIT
+
+# Best-effort desktop notification, for the two outcomes a human has to act
+# on. The notifier is whatever this machine actually has: osascript on the
+# Mac, notify-send on a Linux box with a desktop session, nothing at all on
+# a headless one - where the log and the scheduler's own capture are the
+# record, which is why a missing or failing notifier is never an error.
+#
+# The message is stripped of " and \ because osascript's argument is
+# AppleScript source rather than an argv slot.
+notify() {
+  local title=$1 message=$2 safe
+  safe=$(printf '%s' "$message" | tr -d '"\\')
+  if command -v osascript >/dev/null 2>&1; then
+    if ! osascript -e "display notification \"$safe\" with title \"$title\"" >/dev/null 2>&1; then
+      log "osascript could not deliver the notification; the log above is the record."
+    fi
+  elif command -v notify-send >/dev/null 2>&1; then
+    if ! notify-send --urgency=critical -- "$title" "$safe" >/dev/null 2>&1; then
+      log "notify-send could not deliver the notification (no desktop session?); the log above is the record."
+    fi
+  else
+    log "no desktop notifier on this machine (no osascript, no notify-send); the log above is the record."
+  fi
+}
+
+# --- the checkout -----------------------------------------------------
+
+# The same shape of check run.sh makes on its own directory: a ~/.dotfiles
+# that is missing, or is not this repo, means the machine was never
+# bootstrapped (or was moved), and no amount of fetching will fix it.
+if [ ! -f "$repo/run.sh" ] || [ ! -f "$repo/flake.nix" ]; then
+  warn "$repo is not a dotfiles checkout (no run.sh/flake.nix), so there is nothing to apply."
+  warn "bootstrap this machine with ./run.sh bootstrap first."
+  exit 1
+fi
+
+if ! cd "$repo"; then
+  warn "could not enter $repo, so nothing was applied."
+  exit 1
+fi
+
+# Only master is ever auto-applied. A checkout parked on a topic branch (or
+# detached) is somebody's work in progress; fast-forwarding master from
+# under it is exactly the kind of surprise this script must not spring.
+current_branch=$(git symbolic-ref --quiet --short HEAD) || current_branch=""
+if [ "$current_branch" != "$branch" ]; then
+  log "checkout is on '${current_branch:-a detached HEAD}', not $branch, so it is left alone."
+  exit 0
+fi
+
+# GIT_TERMINAL_PROMPT=0 so a host that cannot authenticate fails instead of
+# blocking a scheduled job on a username prompt forever, and the low-speed
+# settings so a half-open https connection gives up in seconds rather than
+# leaving the job running until the next one is due. (An ssh remote has its
+# own timeouts; those two settings are inert there.)
+if ! fetch_output=$(
+  GIT_TERMINAL_PROMPT=0 git \
+    -c http.lowSpeedLimit=1000 \
+    -c http.lowSpeedTime=15 \
+    fetch --quiet "$remote" "$branch" 2>&1
+); then
+  warn "could not fetch $branch from $remote, so nothing was applied."
+  warn "git said: $fetch_output"
+  exit 1
+fi
+
+head_commit=$(git rev-parse HEAD)
+remote_commit=$(git rev-parse "$remote_ref")
+
+# Four outcomes, deliberately told apart rather than left to `git pull
+# --ff-only`'s single exit status - each one is handled differently below.
+if [ "$head_commit" = "$remote_commit" ]; then
+  relation=current
+elif git merge-base --is-ancestor "$head_commit" "$remote_commit"; then
+  relation=behind
+elif git merge-base --is-ancestor "$remote_commit" "$head_commit"; then
+  relation=ahead
+else
+  relation=diverged
+fi
+
+if [ "$relation" = diverged ]; then
+  warn "$branch and $remote/$branch have diverged - ${head_commit:0:12} and ${remote_commit:0:12} share no descent."
+  warn "nothing was fetched into the working tree and nothing was applied; resolve it by hand in $repo."
+  notify "dotfiles needs a hand" "master and origin/master have diverged. Nothing was applied; resolve it in ~/.dotfiles."
+  exit 1
+fi
+
+# What the last successful rebuild applied. Empty on a machine that has
+# never run this, which is NOT treated as "rebuild now": installing the
+# timer must not trigger a switch nobody asked for.
+applied_commit=$(cat "$state_file" 2>/dev/null) || applied_commit=""
+
+record_applied() {
+  if ! printf '%s\n' "$1" >"$state_file"; then
+    warn "applied ${1:0:12} but could not record it in $state_file;"
+    warn "harmless, but the next run will rebuild again rather than know this one succeeded."
+  fi
+}
+
+# A rebuild is due when the fetch brought something to fast-forward to, or
+# when a previous run's rebuild never completed (the record is behind the
+# checkout). The second half is what stops a failed rebuild from being
+# forgotten the moment the fast-forward has already happened.
+if [ "$relation" = behind ]; then
+  rebuild_due=1
+elif [ -n "$applied_commit" ] && [ "$applied_commit" != "$head_commit" ]; then
+  rebuild_due=1
+else
+  rebuild_due=0
+fi
+
+# Checked once, and never worked around: a fast-forward into a dirty tree
+# is a conflict waiting to happen, and a rebuild from one would apply
+# somebody's half-finished edit to the whole machine. Untracked files count
+# (ignored ones do not) - a fast-forward that brings a file of the same name
+# would fail anyway, and Nix reads untracked files straight into the flake.
+dirty=$(git -c status.showUntrackedFiles=normal status --porcelain)
+if [ -n "$dirty" ]; then
+  if [ "$rebuild_due" = 1 ]; then
+    log "$remote/$branch is at ${remote_commit:0:12} and this checkout has uncommitted changes, so nothing was fast-forwarded or applied:"
+    log "$dirty"
+    log "commit, stash or discard them and the next run will pick it up."
+  else
+    log "nothing to apply (checkout is at ${head_commit:0:12}, with uncommitted changes)."
+  fi
+  exit 0
+fi
+
+if [ "$relation" = behind ]; then
+  if ! merge_output=$(git merge --ff-only "$remote_ref" 2>&1); then
+    warn "could not fast-forward $branch to ${remote_commit:0:12}, so nothing was applied."
+    warn "git said: $merge_output"
+    exit 1
+  fi
+  log "fast-forwarded $branch from ${head_commit:0:12} to ${remote_commit:0:12}."
+  head_commit=$remote_commit
+elif [ "$relation" = ahead ]; then
+  # Unpushed local commits are an ordinary working state, not an incident:
+  # there is nothing to fast-forward to, so this is quiet by design.
+  log "$branch is ahead of $remote/$branch (${head_commit:0:12} vs ${remote_commit:0:12}); nothing to fast-forward."
+fi
+
+# A machine that has never run this and has nothing to fast-forward to
+# records where it stands and stops: installing the timer must not trigger
+# a switch nobody asked for. A first run that *did* have something to
+# fast-forward to falls through and applies it, which is the whole point.
+if [ -z "$applied_commit" ] && [ "$rebuild_due" = 0 ]; then
+  log "first run on this machine: recording ${head_commit:0:12} as applied without rebuilding."
+  record_applied "$head_commit"
+  exit 0
+fi
+
+if [ "$rebuild_due" = 0 ]; then
+  log "already applied ${head_commit:0:12}; nothing to do."
+  exit 0
+fi
+
+if [ -n "$applied_commit" ]; then
+  log "applying ${head_commit:0:12} with ./run.sh rebuild (last applied: ${applied_commit:0:12})."
+else
+  log "applying ${head_commit:0:12} with ./run.sh rebuild (nothing applied on this machine yet)."
+fi
+
+# A scheduled job inherits none of a login shell's environment, and `nix`
+# needs more than PATH on a multi-user install (NIX_REMOTE above all, or a
+# non-root client tries to use the store directly and fails on
+# permissions). The daemon profile script is what a login shell sources to
+# get that, and run.sh sources this very path itself right after
+# installing Nix - so this is the same answer in the same place, skipped
+# when something already set it or the file isn't there. `set +u` around it
+# because that script is generated and not written to be read under `set
+# -u`; its own failure must not take the run down either.
+if [ -z "${NIX_REMOTE:-}" ] && [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+  set +eu
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  set -eu
+fi
+
+# tee rather than a plain redirect so the switch's own output lands in both
+# records, the same as every line above. The status is read out of
+# PIPESTATUS rather than from the pipeline, so that it is run.sh's and only
+# run.sh's: under `pipefail` a tee that could not write would read as a
+# failed rebuild, which would notify about a switch that actually worked and
+# then retry it every half hour.
+set +e
+./run.sh rebuild 2>&1 | tee -a "$log_file"
+rebuild_status=${PIPESTATUS[0]}
+set -e
+
+if [ "$rebuild_status" != 0 ]; then
+  warn "./run.sh rebuild failed, so this machine is still on the previous generation."
+  warn "the checkout is at ${head_commit:0:12}; the rebuild is retried on the next run."
+  notify "dotfiles rebuild failed" "./run.sh rebuild failed for ${head_commit:0:12}. See ~/.local/state/dotfiles-auto/apply.log."
+  exit 1
+fi
+
+record_applied "$head_commit"
+log "applied ${head_commit:0:12}."
