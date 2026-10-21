@@ -36,6 +36,20 @@ lib.mkMerge [
     # instead) is this file with the axi-tool hooks stripped.
     home.file.".claude/settings.json".source =
       config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";
+
+    # The self-apply job's script. Declared here because this module is
+    # exactly the host set that has a ~/.dotfiles checkout to apply, while
+    # the thing that *drives* it is per-OS and lives with that OS:
+    # launchd.agents in modules/mac.nix, a systemd user timer in
+    # modules/linux.nix. Both of those point at this path rather than at a
+    # store path on purpose - see the header of
+    # notes/20261021-dotfiles-auto-apply.md, the short version being that a
+    # unit whose text changes per generation would restart the job in the
+    # middle of the very rebuild it had just started. Symlinked into
+    # ~/.local/bin, which modules/core.nix already puts on PATH, so it is
+    # also just `dotfiles-auto-apply` to run by hand.
+    home.file.".local/bin/dotfiles-auto-apply".source =
+      config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.local/bin/dotfiles-auto-apply";
   }
 
   # Linux-only: the Nerd Font has no Homebrew-cask equivalent to fall back

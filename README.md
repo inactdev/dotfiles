@@ -38,8 +38,12 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 - `modules/inspector.nix` - the Inspector CLI, installed and kept current
   by home-manager activation the same way (see "Inspector" below).
   `personal-mac` and `home-linux` import this; Codespaces does not.
-- `modules/mac.nix` - the herdr config symlink. `personal-mac` only
-  (herdr is a Homebrew cask, so it exists nowhere else).
+- `modules/mac.nix` - the herdr config symlink, and the launchd agent that
+  drives the self-apply job below. `personal-mac` only (herdr is a
+  Homebrew cask, and launchd doesn't exist elsewhere).
+- `modules/linux.nix` - the systemd user timer that drives the same
+  self-apply job. `home-linux` only; Codespaces does not import it (a
+  container is applied once at creation and then thrown away).
 - `modules/codespace.nix` - the Codespaces-only delta (Claude Code itself,
   since there's no Homebrew cask to lean on; which Claude settings file;
   the `cc` alias) - see the Codespaces section below.
@@ -48,7 +52,8 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 `homeConfigurations.home-linux`/`.codespace-personal`/`.codespace-work` by
 composing these module files per host (`personal-mac` =
 core+desktop+fabrica+inspector+mac, `home-linux` =
-core+desktop+fabrica+inspector, each codespace posture = core+codespace).
+core+desktop+fabrica+inspector+linux, each codespace posture =
+core+codespace).
 `configuration.nix` adds Darwin-only system settings and Homebrew (for the
 handful of casks/formulas Nix doesn't cover well on macOS, e.g. GUI apps).
 
@@ -167,6 +172,65 @@ login shell what `command -v <tool>` answers, and:
 Like everything else in these two steps it never fails a switch - every
 outcome is a message and an exit 0. `fabrica doctor` is the hard stop that
 refuses to start work when the wrong Inspector would win.
+
+### Applying itself
+
+`personal-mac` and `home-linux` keep themselves applied without anyone
+running anything. Every 30 minutes, and once at login, the OS's own
+scheduler runs `home/.local/bin/dotfiles-auto-apply`, which fetches
+`~/.dotfiles`' origin and - when `origin/master` has moved ahead of a
+clean `master` checkout - fast-forwards to it and applies the result with
+`./run.sh rebuild`. A launchd user agent does the scheduling on the Mac
+(`modules/mac.nix`), a systemd user timer on Linux
+(`modules/linux.nix`), so a cloud Linux box set up as `home-linux` gets
+this from its bootstrap with nothing extra to install.
+
+Nothing has to be run by hand, but it is also just
+`dotfiles-auto-apply` on PATH if you want a run now.
+
+What it will not do:
+
+- **It never touches a dirty checkout.** Any staged or unstaged change,
+  and any untracked file git doesn't ignore, stops the run before the
+  fast-forward - nothing merged, nothing applied, and the log says what is
+  in the way. A `~/.dotfiles` parked on a branch other than `master`, or
+  on a detached HEAD, is left alone the same way.
+- **It only ever fast-forwards.** A `master` that has genuinely diverged
+  from `origin/master` is never merged, rebased or reset; that one
+  notifies and exits non-zero, because only you can resolve it. Local
+  commits you haven't pushed yet are an ordinary state and stay quiet.
+- **It never leaves the machine quietly behind.** The commit of the last
+  successful rebuild is recorded, so a rebuild that failed is retried on
+  the next run rather than forgotten once the checkout has caught up. That
+  record, not the fetch, is what decides a rebuild is due - so a commit
+  made straight on local `master`, or a `git pull` nobody applied, gets
+  applied on the next tick too.
+
+Where to look when you want to know what it did:
+
+- `~/.local/state/dotfiles-auto/apply.log` - every run, trimmed to its
+  last 2000 lines, including the output of each `./run.sh rebuild`.
+- The scheduler's own copy of the same lines:
+  `~/Library/Logs/dotfiles-auto-apply.log` on the Mac,
+  `journalctl --user -u dotfiles-auto-apply` on Linux.
+- A desktop notification, for the two outcomes that need you: a failed
+  rebuild, and a real divergence. The notifier is looked up at runtime
+  (`osascript`, then `notify-send`), so a headless box simply logs -
+  nothing fails for want of a notification daemon.
+
+Two things it needs from the machine itself, which Nix can't declare:
+
+- **On `personal-mac`, passwordless sudo for `darwin-rebuild`.**
+  `./run.sh rebuild` ends in `sudo darwin-rebuild switch` there, and a
+  launchd user agent has no terminal for sudo to prompt at. Until a
+  `/etc/sudoers.d` rule lets that one command run without a password,
+  every run that finds new commits will fast-forward, fail the rebuild,
+  and notify - visibly, and retried, but not applied. `home-linux` needs
+  nothing: its rebuild is a plain user-level `home-manager switch`.
+- **On a headless Linux box, `loginctl enable-linger <user>` once, as
+  root.** A systemd *user* timer only runs while that user's systemd
+  instance is up; with linger it comes up at boot, without it only while
+  someone is logged in.
 
 ## The work host (`--no-nix`)
 
@@ -289,9 +353,10 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, plus its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`.
 - `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
+- `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-apply job (fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming, notifier lookup), against a mocked `git`, a mocked `./run.sh` and mocked notifiers on a hermetic PATH and a scratch `$HOME` - it never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
 - `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
-The four hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
+The five hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
