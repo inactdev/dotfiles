@@ -100,10 +100,13 @@ trap 'trim_log || true' EXIT
 # record, which is why a missing or failing notifier is never an error.
 #
 # The message is stripped of " and \ because osascript's argument is
-# AppleScript source rather than an argv slot.
+# AppleScript source rather than an argv slot. The strip is a parameter
+# expansion rather than `tr -d`, whose delete set would have to spell a
+# backslash as '\\' inside single quotes - two characters tr folds back to
+# one, which reads as a quoting mistake to both people and shellcheck.
 notify() {
   local title=$1 message=$2 safe
-  safe=$(printf '%s' "$message" | tr -d '"\\')
+  safe=${message//[\"\\]/}
   if command -v osascript >/dev/null 2>&1; then
     if ! osascript -e "display notification \"$safe\" with title \"$title\"" >/dev/null 2>&1; then
       log "osascript could not deliver the notification; the log above is the record."

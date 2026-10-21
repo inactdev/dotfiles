@@ -110,7 +110,13 @@ one script is correct on the captain's Mac, on a Linux box with a desktop
 session, and on a headless cloud box where no notification can be
 delivered at all and the log plus journald are the whole record. Message
 text is stripped of `"` and `\` before it reaches `osascript -e`, because
-that argument is AppleScript source, not an argv slot.
+that argument is AppleScript source, not an argv slot. That strip is a
+`${message//[\"\\]/}` parameter expansion and should stay one: the obvious
+`tr -d '"\\'` has to write the backslash twice inside single quotes and
+rely on `tr` folding it back to one, which shellcheck flags as a probable
+quoting mistake (SC1003) - and shellcheck is part of this repo's check
+floor, so the pipeline version fails the build rather than merely reading
+oddly.
 
 **The log is written by the script and captured by the scheduler, into
 two different files on purpose.** Every line goes to
