@@ -6,9 +6,14 @@
 }:
 
 let
-  # The one definition of where the managed Inspector binary lives, used
-  # both for the install (passed to the script, which hands it to go as
-  # GOBIN) and for the PATH entry below.
+  managedPaths = import ./managed-paths.nix { homeDirectory = config.home.homeDirectory; };
+
+  # Where the managed Inspector binary lives, used both for the install
+  # (passed to the script, which hands it to go as GOBIN) and for the PATH
+  # entry below. The value comes from modules/managed-paths.nix rather than
+  # being written out here because modules/core.nix needs the same answer
+  # to put it on PATH ahead of ~/.local/bin, and one of the two had to stop
+  # guessing.
   #
   # Go's own default GOBIN - $GOPATH/bin, i.e. ~/go/bin - rather than a
   # dedicated directory: it is writable on a Nix host (unlike npm's
@@ -19,19 +24,30 @@ let
   # It is passed explicitly all the same, so a `go env -w GOBIN=...` done
   # for some other reason cannot move the binary out from under the PATH
   # entry below.
-  goBin = "${config.home.homeDirectory}/go/bin";
+  goBin = managedPaths.goBin;
 
   inspectorSync = ./inspector-sync.sh;
+  managedBinGuard = ./managed-bin-guard.sh;
 
   # go for the install and for reading the installed binary's build info,
   # git for the ls-remote (and for go's own fetch), gawk for the build-info
-  # parse, coreutils for mkdir/cat - all from the store, so the activation
-  # step behaves the same whatever a login shell has on PATH.
+  # parse, coreutils for mkdir/cat/date/env/mv - all from the store, so the
+  # activation step behaves the same whatever a login shell has on PATH.
+  #
+  # bash and zsh are here for the guard, which asks a fresh login shell of
+  # each what `command -v inspector` answers (see
+  # modules/managed-bin-guard.sh): the guarantee is not allowed to depend on
+  # which shell is in use, so neither is the check, and a store copy of each
+  # means the check happens even on a machine that is missing one. They read
+  # this user's own startup files either way, which is the part that decides
+  # the answer.
   syncPath = lib.makeBinPath [
     pkgs.go
     pkgs.git
     pkgs.gawk
     pkgs.coreutils
+    pkgs.bash
+    pkgs.zsh
   ];
 in
 
@@ -66,7 +82,7 @@ in
   # Nix-level dependency in this repo is declared.
   home.activation.installInspector = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     $DRY_RUN_CMD PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
-      ${inspectorSync} ${lib.escapeShellArg goBin} \
+      ${inspectorSync} ${lib.escapeShellArg goBin} ${managedBinGuard} \
       || echo "inspector-sync exited non-zero; continuing activation." >&2
   '';
 }

@@ -6,8 +6,13 @@
 }:
 
 let
-  # The one definition of where the managed global npm install lives, used
-  # both for the install itself and for the PATH entry below.
+  managedPaths = import ./managed-paths.nix { homeDirectory = config.home.homeDirectory; };
+
+  # Where the managed global npm install lives, used both for the install
+  # itself and for the PATH entry below. The value comes from
+  # modules/managed-paths.nix rather than being written out here because
+  # modules/core.nix needs the same answer to put it on PATH ahead of
+  # ~/.local/bin, and one of the two had to stop guessing.
   #
   # A dedicated prefix rather than npm's own default: on a Nix host the
   # default global prefix is the nodejs package's store path, which is
@@ -16,17 +21,28 @@ let
   # with the directory the shell happens to be in, so a Fabrica installed
   # from one project would be off PATH in the next one. This one is stable
   # and writable, and modules/core.nix's fnm block leaves it alone.
-  npmPrefix = "${config.home.homeDirectory}/.npm-global";
+  npmPrefix = managedPaths.npmPrefix;
 
   fabricaSync = ./fabrica-sync.sh;
+  managedBinGuard = ./managed-bin-guard.sh;
 
   # git for the ls-remote, nodejs for npm (and for reading build info),
-  # coreutils for mkdir/tr - all from the store, so the activation step
-  # behaves the same whatever a login shell has on PATH.
+  # coreutils for mkdir/tr/date/env/mv - all from the store, so the
+  # activation step behaves the same whatever a login shell has on PATH.
+  #
+  # bash and zsh are here for the guard, which asks a fresh login shell of
+  # each what `command -v fabrica` answers (see
+  # modules/managed-bin-guard.sh): the guarantee is not allowed to depend on
+  # which shell is in use, so neither is the check, and a store copy of each
+  # means the check happens even on a machine that is missing one. They read
+  # this user's own startup files either way, which is the part that decides
+  # the answer.
   syncPath = lib.makeBinPath [
     pkgs.nodejs
     pkgs.git
     pkgs.coreutils
+    pkgs.bash
+    pkgs.zsh
   ];
 in
 
@@ -50,7 +66,7 @@ in
 # it has no use for. Adding it later is one line in that host's
 # homeModules list.
 {
-  home.sessionPath = [ "${npmPrefix}/bin" ];
+  home.sessionPath = [ managedPaths.npmBin ];
 
   # entryAfter "writeBoundary" for the same reason every other activation
   # step here uses it: it must run after home-manager has finished writing
@@ -64,7 +80,7 @@ in
   # dependency in this repo is declared.
   home.activation.installFabrica = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     $DRY_RUN_CMD PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
-      ${fabricaSync} ${lib.escapeShellArg npmPrefix} \
+      ${fabricaSync} ${lib.escapeShellArg npmPrefix} ${managedBinGuard} \
       || echo "fabrica-sync exited non-zero; continuing activation." >&2
   '';
 }

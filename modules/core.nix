@@ -9,6 +9,9 @@
 let
   isDarwin = pkgs.stdenv.isDarwin;
   dotfiles = "${config.home.homeDirectory}/.dotfiles";
+  # The two managed bin directories, by their one definition - see the PATH
+  # line in the zsh block below for why this module needs to know them.
+  managedPaths = import ./managed-paths.nix { homeDirectory = config.home.homeDirectory; };
 in
 
 {
@@ -102,7 +105,21 @@ in
         eval "$(/opt/homebrew/bin/brew shellenv)"
       fi
 
-      export PATH="$HOME/.local/bin:$PATH"
+      # The two directories this configuration installs managed tools into
+      # go ahead of ~/.local/bin, which is the whole point of writing them
+      # out here: home.sessionPath (modules/inspector.nix,
+      # modules/fabrica.nix) lands in hm-session-vars.sh, which is sourced
+      # before this line runs, so a bare `export PATH="$HOME/.local/bin:$PATH"`
+      # put every hand-dropped copy in front of every managed one - that is
+      # how a stale ~/.local/bin/inspector came to shadow ~/go/bin/inspector.
+      # The directories are named by modules/managed-paths.nix, which the two
+      # installing modules read as well, so there is still one definition of
+      # each. Shared here rather than per-module because PATH order is only
+      # meaningful in one place: naming all three in a single line is what
+      # makes the order reviewable. A codespace composes this module without
+      # those two (see flake.nix), where the entries are simply directories
+      # that do not exist - which PATH ignores.
+      export PATH="${managedPaths.goBin}:${managedPaths.npmBin}:$HOME/.local/bin:$PATH"
 
       if command -v rbenv >/dev/null 2>&1; then
         eval "$(rbenv init - zsh)"

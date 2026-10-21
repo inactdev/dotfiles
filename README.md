@@ -96,7 +96,9 @@ Two details worth knowing:
   version's prefix, and fnm's PATH entry means the copy you get is the one
   you just installed, not the managed one. That is a question of which
   file runs rather than which version - both are being pointed at the same
-  `master` - and `which fabrica` answers it.
+  `master` - and `which fabrica` answers it. The next activation moves
+  that copy aside and says so (see "The managed copy is the one a shell
+  finds" below).
 
 ### Inspector
 
@@ -129,9 +131,42 @@ Three details worth knowing:
   `notes/20261021-inspector-home-manager-install.md`.)
 - **The binary goes to `~/go/bin`,** Go's own default `GOBIN`, which
   `home.sessionPath` puts on PATH - so anything else you have
-  `go install`ed is already there too. Note that `modules/core.nix` adds
-  `~/.local/bin` to PATH ahead of it, so an `inspector` placed there by
-  hand would win; `which inspector` answers which copy you are running.
+  `go install`ed is already there too. It is also the copy a shell finds,
+  which is a guarantee rather than a hope - see below.
+
+### The managed copy is the one a shell finds
+
+Installing the right binary is only half the job: the one `inspector` or
+`fabrica` resolves to has to be that same binary. Two things make sure of
+it on `personal-mac` and `home-linux` alike.
+
+`modules/core.nix` puts `~/go/bin` and `~/.npm-global/bin` on PATH
+*ahead* of `~/.local/bin` (all three in one line, so the order is
+reviewable in one place). The directories themselves are named once, in
+`modules/managed-paths.nix`, which the two installing modules read too.
+
+Then, on every activation, both sync scripts end by calling
+`modules/managed-bin-guard.sh` - on every path through them, including the
+ones that install nothing, since a machine with nothing to install today
+is where a stale copy survives longest. It asks a fresh `bash` *and* `zsh`
+login shell what `command -v <tool>` answers, and:
+
+- another copy under your home directory is **moved aside**, not deleted,
+  into `~/.cache/dotfiles-shadowed/<timestamp>/<its path under $HOME>`,
+  with both paths printed - so a copy moved by mistake is one `mv` from
+  coming back. (The stale `~/.local/bin/inspector` that shadowed
+  `~/go/bin/inspector` is the case this exists for.)
+- a copy it must not touch - outside your home directory, or one that
+  resolves into the Nix store, which means something installs it
+  declaratively - gets a loud warning on stderr naming the exact path, and
+  is left exactly where it is.
+- if the managed copy is not installed at all (a failed or skipped
+  install), nothing is moved: the stale copy may be the only one on the
+  machine.
+
+Like everything else in these two steps it never fails a switch - every
+outcome is a message and an exit 0. `fabrica doctor` is the hard stop that
+refuses to start work when the wrong Inspector would win.
 
 ## The work host (`--no-nix`)
 
