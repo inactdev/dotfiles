@@ -456,7 +456,18 @@ echo "==> activating homeConfigurations.ci-linux for real (scratch HOME, throwaw
 # home-manager/Nix version that forces more of the outputs attrset than the
 # one path asked for would fail here for an unrelated host's reason. The
 # flag costs nothing and removes that coupling.
-docker exec -u "$CI_USER" "$CONTAINER" bash -c '
+#
+# USER is named explicitly because this exec does not set it and
+# home-manager's own command reads it under `set -u`: with USER unset the
+# switch aborts with `USER: unbound variable` before a single activation
+# step runs, so every assertion below fails for a reason that has nothing
+# to do with what they are checking. install.sh passes USER to its own
+# home-manager invocation for the codespace switch as well. HOME is named
+# next to it to pin what the rest of this section is relative to - it must
+# stay $CI_USER's real home directory, because home-manager refuses to
+# activate against any home directory other than the one its configuration
+# was evaluated with.
+docker exec -u "$CI_USER" -e USER="$CI_USER" -e HOME="$CI_HOME" "$CONTAINER" bash -c '
   set -euo pipefail
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   ln -sfn "$HOME/dotfiles-src" "$HOME/.dotfiles"

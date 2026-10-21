@@ -103,6 +103,28 @@ Two sharp edges in the container for anyone extending this:
   skip. It would matter if `ci-linux` were ever activated somewhere
   systemd is live.
 
+Two things the rehearsal itself needed, both worth knowing before writing
+another one:
+
+- **`docker exec -u <user>` does not set `USER`, and home-manager's command
+  reads it under `set -u`.** A switch started that way dies with
+  `home-manager: line NNN: USER: unbound variable` before any activation
+  step runs - and because that happens before the steps, every assertion
+  about them fails for a reason unrelated to what it checks. Pass
+  `-e USER=<user>` (and `-e HOME=<that user's home>`, which also has to be
+  the `home.homeDirectory` the configuration was evaluated with, or
+  home-manager refuses outright). `install.sh` names `USER` for its own
+  codespace switch for the same reason.
+- **nixfmt expands a binding whose value is an attribute set with one
+  `name = value;`, but leaves one with a single `inherit x;` inline.** So
+  `extraSpecialArgs = { inherit user; };` passes `nixfmt --check` while
+  `extraSpecialArgs = { user = ciUser; };` fails it, and the fix is the
+  three-line form. It is not a width rule: nixfmt's `absorbRHS` carves out
+  "exactly one inherit statement" as the only non-expanding case, so
+  copying a neighbouring single-line attrset is only safe when the thing
+  being copied is also a lone `inherit`. Worth knowing because
+  `nixfmt --check` runs in CI and the formatter is not on every machine.
+
 **Same shape elsewhere.** `modules/desktop.nix`'s `installNerdFont` and
 `modules/linux.nix`'s `startDotfilesAutoApplyTimer` still use
 `$DRY_RUN_CMD`. They are *not* broken - every one of their commands starts
