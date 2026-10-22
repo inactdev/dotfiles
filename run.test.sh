@@ -238,6 +238,7 @@ run_cmd_sandboxed() {
     # writes the commit the self-apply job reads) must land under the
     # scratch HOME - an XDG_STATE_HOME inherited from the person running
     # the suite would put it in their real state directory instead.
+    # shellcheck disable=SC2034 # read by record_applied_commit, sourced dynamically above
     XDG_STATE_HOME=""
     # shellcheck disable=SC2030,SC2031 # PATH is deliberately remocked per subshell
     PATH="$MOCK_DIR:$PATH"
