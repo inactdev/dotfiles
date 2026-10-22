@@ -31,7 +31,12 @@ get the full setup via Nix + home-manager, composed from `modules/`:
   login shell's PATH - zsh is still the shell everything else here is
   built around. On a machine that already has its own `~/.bashrc`,
   `~/.bash_profile` or `~/.profile`, home-manager will refuse to overwrite
-  them: move them aside once, or pass `-b hm-backup` to the switch.
+  them - so every switch here carries a backup extension and moves them to
+  `<name>.hm-backup` instead: `-b hm-backup` from `./run.sh` and
+  `install.sh`, `home-manager.backupFileExtension` from `personal-mac`'s
+  nix-darwin configuration. Only a hand-written `home-manager switch` of
+  your own needs the flag added by hand (before the `switch` word - after
+  it, home-manager ignores it).
 - `modules/desktop.nix` - ghostty, fonts, git *identity*, and the
   local-machine Claude settings variant (`home/.claude/settings.json`,
   axi-tool hooks included) - anything that needs a screen, a local

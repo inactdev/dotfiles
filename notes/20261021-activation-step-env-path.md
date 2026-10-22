@@ -174,7 +174,8 @@ only the second one was about PATH at all.
   regular files unless the switch carries a backup extension (`-b
   hm-backup`, as `install.sh` passes and personal-mac's
   `home-manager.backupFileExtension` sets - `./run.sh`'s home-linux switch
-  does not).
+  did not, at the time this was written; that gap is closed, see
+  `notes/20261022-home-linux-switch-backup-extension.md`).
 
 **Same shape elsewhere.** `modules/desktop.nix`'s `installNerdFont` and
 `modules/linux.nix`'s `startDotfilesAutoApplyTimer` still use

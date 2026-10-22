@@ -444,6 +444,11 @@ assert "work posture never writes back into its own checkout (e.g. through the ~
 #     container has network, and pointing the steps at fixtures would
 #     recreate the exact failure mode this section exists to end: a test
 #     that passes while the real thing does not run.
+#
+# It has since picked up a second job, which the switch command below and
+# its assertions spell out: it is also the only rehearsal anywhere of the
+# `-b hm-backup` that `./run.sh`'s home-linux branch passes, against a home
+# directory that really does have unmanaged files in the way.
 CI_HOST_LOG="$BUNDLE_DIR/ci-linux-activation.log"
 echo "==> activating homeConfigurations.ci-linux for real (scratch HOME, throwaway container user)"
 # ~/.dotfiles is what modules/core.nix's out-of-store symlinks resolve
@@ -469,6 +474,30 @@ echo "==> activating homeConfigurations.ci-linux for real (scratch HOME, throwaw
 # stay $CI_USER's real home directory, because home-manager refuses to
 # activate against any home directory other than the one its configuration
 # was evaluated with.
+#
+# -b hm-backup is the standalone-CLI equivalent of the
+# home-manager.backupFileExtension personal-mac gets declaratively (that
+# option exists only in the NixOS/nix-darwin modules, never for a
+# homeConfigurations output), and `./run.sh`'s home-linux switch passes the
+# same flag - this command is the rehearsal of it. Note the position: -b is
+# a top-level option, and a `switch --flake ... -b hm-backup` is dropped
+# silently instead of erroring, so it has to come before `switch`.
+#
+# This rehearsal already exercises the flag whether or not anybody means
+# it to: $CI_USER was made with `useradd -m`, so /etc/skel's ~/.bashrc and
+# ~/.profile are sitting exactly where modules/core.nix's
+# programs.bash.enable makes home-manager put managed files, and
+# checkLinkTargets aborts the entire activation over an unmanaged regular
+# file unless a backup extension is given. That is the real-world case -
+# it is also incidental to a base image this test does not control, so the
+# assertions below are pinned to a file seeded here instead: ~/.zshrc,
+# which skel never ships and modules/core.nix definitely manages (the
+# codespace-personal section above backs up a seeded one the same way).
+# Dropping the flag then fails on a named check rather than on an
+# activation abort twenty lines up the log.
+CI_SEEDED_ZSHRC="pre-existing zshrc that home-manager must back up, not trip over"
+docker exec -u "$CI_USER" -e HOME="$CI_HOME" -e SEEDED="$CI_SEEDED_ZSHRC" \
+  "$CONTAINER" bash -c 'printf "%s\n" "$SEEDED" >"$HOME/.zshrc"'
 docker exec -u "$CI_USER" -e USER="$CI_USER" -e HOME="$CI_HOME" "$CONTAINER" bash -c '
   set -euo pipefail
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -480,6 +509,27 @@ CI_HOST_STATUS=$?
 cat "$CI_HOST_LOG"
 
 assert "ci-linux: home-manager switch exits 0" [ "$CI_HOST_STATUS" -eq 0 ]
+
+# Both halves matter. The backup must hold the original bytes (a backup
+# that lost the file is not a backup), and the managed file must actually
+# be in place afterwards - an activation that merely declined to touch
+# ~/.zshrc would leave the seeded text sitting there too, and would still
+# be the bug.
+seeded_zshrc_was_backed_up() {
+  docker exec -u "$CI_USER" -e SEEDED="$CI_SEEDED_ZSHRC" "$CONTAINER" bash -c \
+    'grep -qxF "$SEEDED" "$HOME/.zshrc.hm-backup"'
+}
+assert "ci-linux: the unmanaged ~/.zshrc was moved to ~/.zshrc.hm-backup intact" \
+  seeded_zshrc_was_backed_up
+
+managed_zshrc_took_its_place() {
+  local target
+  target="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    'readlink -f "$HOME/.zshrc" 2>/dev/null')"
+  case "$target" in /nix/store/*) return 0 ;; *) return 1 ;; esac
+}
+assert "ci-linux: the managed ~/.zshrc took its place (resolves into /nix/store)" \
+  managed_zshrc_took_its_place
 
 # A zero exit is necessary and nowhere near sufficient. Both steps end in
 # `|| echo "<tool>-sync exited non-zero; continuing activation."` entirely

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Test suite for run.sh's host-resolution logic (the home/work menu, the
 # uname-based mac-vs-linux auto-detect, the work-has-no-linux-host guards)
-# and its two ~/.dotfiles symlink guards: validate_dir (run.sh:4, aborts on
+# its switcher command lines (which host branches to home-manager vs.
+# darwin-rebuild, and that the home-linux branch carries `-b hm-backup`
+# ahead of `switch`), and its two ~/.dotfiles symlink guards: validate_dir (run.sh:4, aborts on
 # an unresolvable/non-repo DIR) and link_dotfiles (run.sh:164/260, refuses
 # to silently repoint an existing ~/.dotfiles - see issue #9). Sources the
 # real run.sh (see the BASH_SOURCE guard at its tail) and calls its
@@ -250,7 +252,11 @@ run_cmd_sandboxed() {
 test_rebuild_home_linux_uses_home_manager_not_darwin_rebuild() {
   setup
   out=$(run_cmd_sandboxed cmd_rebuild "home-linux")
-  assert_contains "rebuild home-linux runs home-manager switch" "$out" "home-manager -- switch --flake"
+  # Deliberately not the whole argv: the flags between `--` and `switch`
+  # are what test_rebuild_home_linux_passes_backup_extension_before_switch
+  # is for, so adding one there must not break this test's own subject.
+  assert_contains "rebuild home-linux runs the home-manager flake app" "$out" "#home-manager -- "
+  assert_contains "rebuild home-linux switches against a flake" "$out" "switch --flake"
   assert_contains "rebuild home-linux targets the home-linux flake attr" "$out" ".dotfiles#home-linux"
   case "$out" in
     *darwin-rebuild*)
@@ -273,6 +279,73 @@ test_rebuild_personal_mac_still_uses_darwin_rebuild() {
     "sudo darwin-rebuild switch --flake"
   assert_contains "rebuild personal-mac targets the personal-mac flake attr" "$out" \
     ".dotfiles#personal-mac"
+  teardown
+}
+
+# Asserts the *position* of -b hm-backup, not merely its presence. It is a
+# top-level home-manager option rather than one `switch` accepts, and a
+# `switch --flake ... -b hm-backup` is silently dropped instead of
+# rejected - so a presence-only check would pass while the switch kept
+# aborting on the first unmanaged file in the way. Reads the recorded argv
+# of whichever command invoked the home-manager flake app.
+assert_backup_flag_precedes_switch() {
+  local desc=$1 log=$2 line
+  line=$(printf '%s\n' "$log" | grep -- '#home-manager' | head -1)
+  case "$line" in
+    *"-b hm-backup switch "*)
+      pass_count=$((pass_count + 1))
+      printf 'ok - %s\n' "$desc"
+      ;;
+    *)
+      fail_count=$((fail_count + 1))
+      printf 'FAIL - %s\n  home-manager was invoked as: %s\n' "$desc" "$line"
+      ;;
+  esac
+}
+
+# home-linux is a standalone homeConfigurations output, where
+# home-manager.backupFileExtension (what personal-mac gets declaratively in
+# flake.nix) does not exist - the CLI flag is the only equivalent. Without
+# it, one unmanaged regular file where a managed one goes aborts the entire
+# activation, and on a stock Ubuntu box that is the default state:
+# /etc/skel seeds ~/.bashrc and ~/.profile, both of which
+# modules/core.nix's programs.bash.enable makes home-manager own.
+test_rebuild_home_linux_passes_backup_extension_before_switch() {
+  setup
+  out=$(run_cmd_sandboxed cmd_rebuild "home-linux")
+  assert_backup_flag_precedes_switch \
+    "rebuild home-linux passes -b hm-backup ahead of switch" "$out"
+  teardown
+}
+
+# The bootstrap branch runs its own copy of the command, and is the one
+# that meets those untouched skel files first.
+test_bootstrap_home_linux_passes_backup_extension_before_switch() {
+  setup
+  out=$(run_cmd_sandboxed cmd_bootstrap_nix "home-linux")
+  assert_backup_flag_precedes_switch \
+    "bootstrap home-linux passes -b hm-backup ahead of switch" "$out"
+  assert_contains "bootstrap home-linux targets the home-linux flake attr" "$out" \
+    ".dotfiles#home-linux"
+  teardown
+}
+
+# The Mac branch must NOT grow the flag by sympathy: darwin-rebuild has no
+# -b, and personal-mac already gets the behaviour from flake.nix's
+# home-manager.backupFileExtension.
+test_rebuild_personal_mac_passes_no_backup_flag() {
+  setup
+  out=$(run_cmd_sandboxed cmd_rebuild "personal-mac")
+  case "$out" in
+    *"-b hm-backup"*)
+      fail_count=$((fail_count + 1))
+      printf 'FAIL - darwin-rebuild takes no -b; personal-mac uses flake.nix instead:\n%s\n' "$out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - rebuild personal-mac passes no -b (backupFileExtension covers it)"
+      ;;
+  esac
   teardown
 }
 
@@ -636,6 +709,9 @@ test_explicit_personal_mac_host_still_resolves_to_personal_mac
 test_explicit_work_host_implies_no_nix
 test_rebuild_home_linux_uses_home_manager_not_darwin_rebuild
 test_rebuild_personal_mac_still_uses_darwin_rebuild
+test_rebuild_home_linux_passes_backup_extension_before_switch
+test_bootstrap_home_linux_passes_backup_extension_before_switch
+test_rebuild_personal_mac_passes_no_backup_flag
 test_plan_home_linux_builds_the_home_manager_activation_package
 test_plan_personal_mac_still_builds_the_darwin_system
 test_rebuild_records_the_commit_for_the_self_apply_job
