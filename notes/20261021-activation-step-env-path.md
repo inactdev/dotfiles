@@ -126,34 +126,55 @@ another one:
   being copied is also a lone `inherit`. Worth knowing because
   `nixfmt --check` runs in CI and the formatter is not on every machine.
 
-**What the rehearsal found once the steps actually ran.** Both failures
-were the same kind of thing: an activation step's PATH is only the store
-packages its own module lists, and a tool that looks something up by name
-finds nothing there.
+**What the rehearsal found once the steps actually ran.** Four things, and
+only the second one was about PATH at all.
 
-- **npm runs lifecycle scripts through a shell it resolves by name.** With
-  `script-shell` at its default, npm spawns the bare name `sh`
-  (`@npmcli/promise-spawn` substitutes `sh` for `shell: true` on POSIX and
-  uses a string as given), so every script an install has to run is one
-  PATH lookup away from `npm error enoent spawn sh ENOENT` - and a global
-  install from a git spec runs at least two of them, the package's own
-  `prepare` and esbuild's `postinstall`. The fix that does not depend on
-  that lookup is to name the shell by absolute path:
-  `npm_config_script_shell=${pkgs.bash}/bin/bash` on the `env` the step
-  already had. npm takes any config from the environment as
-  `npm_config_<key>` with underscores standing in for dashes, and pacote
-  passes the same value through to the `prepare` it runs for a git
-  dependency, so one setting covers both layers. Note what is *not* the
-  fix: adding `pkgs.bash` to the module's PATH list. It was already there,
-  and bash's own package does ship a `bin/sh` symlink next to `bin/bash` in
-  this nixpkgs - so that PATH entry provides the name and the lookup is
-  still the wrong thing to rely on.
-- **`go` leaves cgo on, and no C compiler is in the store PATH either.**
+- **`npm install -g <git spec>` is broken by npm, for everyone.** npm
+  clones the spec into a temporary directory of its own under
+  `~/.npm/_cacache/tmp`, and in global mode installs that clone by
+  *symlinking* the prefix at it and then deleting the clone - so a
+  lifecycle script (the package's own `prepare`, esbuild's `postinstall`)
+  is asked to run in a directory that is already gone. The error it
+  surfaces as is `npm error enoent spawn sh ENOENT`, which reads like a
+  missing shell and is not one: it reproduces with `/bin/sh` and
+  `/bin/bash` both present, and `--ignore-scripts` merely trades it for a
+  dangling symlink to a deleted `git-cloneXXXX` directory with no
+  `node_modules` under it. Do not chase the shell. The two-step install is
+  the fix: `npm pack <git spec> --pack-destination <dir>` (same clone, same
+  `prepare`, so build artefacts still ship) and then
+  `npm install -g <dir>/<name>-<version>.tgz`, which is an ordinary
+  tarball install into real files.
+- **`go` leaves cgo on, and no C compiler is in the store PATH.**
   `go install` stopped with `cgo: C compiler gcc not found` on a container
-  that had gcc installed, because the step cannot see it. Inspector is pure
-  Go, so `modules/inspector-sync.sh` now sets `CGO_ENABLED=0` on the
-  install - the compiler is not needed on any host, and the step stops
-  depending on one being present and visible.
+  that had gcc installed, because an activation step's PATH is only the
+  store packages its module lists. Inspector is pure Go, so
+  `modules/inspector-sync.sh` sets `CGO_ENABLED=0` on the install - no
+  compiler needed on any host, and nothing to be visible or not.
+- **A step that reads the new generation's files belongs after
+  `linkGeneration`, not after `writeBoundary`.** The two are not the same
+  point: `writeBoundary` is where a step is first allowed to touch the
+  user's files, and `linkGeneration` - a later entry in home-manager's own
+  activation DAG - is what actually symlinks them into `$HOME`. Both sync
+  steps end by asking a fresh login shell what `command -v <tool>`
+  answers, so ordered after `writeBoundary` they ran before any `.zshrc`
+  existed on a home directory being switched for the first time, found
+  nothing, and reported a managed tool that no shell could see.
+  `lib.hm.dag.entryAfter [ "linkGeneration" ]` is the right place for
+  anything that reads what the generation just linked.
+- **`home.sessionPath` reaches bash only if `programs.bash` is enabled.**
+  home-manager exports the session path from
+  `hm-session-vars.sh`, and the only thing that sources it for bash is the
+  `~/.bash_profile`/`~/.profile` pair that `programs.bash` writes - so with
+  bash unmanaged, `~/go/bin` and `~/.npm-global/bin` were on zsh's PATH
+  (from `modules/core.nix`'s own line) and on nothing else. Two details
+  that matter when enabling it: the export *prepends*, so managed copies
+  come ahead of what was already on PATH without anything being spelled
+  out by hand; and the module writes `~/.bashrc`, `~/.bash_profile` and
+  `~/.profile`, which home-manager refuses to overwrite as existing
+  regular files unless the switch carries a backup extension (`-b
+  hm-backup`, as `install.sh` passes and personal-mac's
+  `home-manager.backupFileExtension` sets - `./run.sh`'s home-linux switch
+  does not).
 
 **Same shape elsewhere.** `modules/desktop.nix`'s `installNerdFont` and
 `modules/linux.nix`'s `startDotfilesAutoApplyTimer` still use
@@ -163,3 +184,12 @@ empty expansion leaves a valid command line - but they are on the same
 deprecated variable and were left alone deliberately to keep this change
 scoped. The rule to remember when touching either: `$DRY_RUN_CMD` or `run`
 in front of a bare `VAR=value` is always wrong; put `env` between them.
+
+`startDotfilesAutoApplyTimer` is also on the ordering shape above, and
+still is: it runs `systemctl --user start dotfiles-auto-apply.timer` after
+`writeBoundary`, while the unit file it names is one of the files
+`linkGeneration` links. On a first-ever switch the start therefore comes
+before the unit exists, and the step says so and carries on ("it starts on
+the next login"), which is why this has never looked like a failure - the
+next activation starts it. Moving it after `linkGeneration` would make the
+first switch start it too.

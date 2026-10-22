@@ -25,7 +25,13 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 
 - `modules/core.nix` - cross-host CLI tooling (nvim, ripgrep, fd, fzf, jq,
   node + fnm, formatters, git behavior, zsh + aliases, starship, direnv) and the
-  AGENTS.md/nvim-config symlinks. Every host imports this.
+  AGENTS.md/nvim-config symlinks. Every host imports this. It also enables
+  `programs.bash`, purely so home-manager writes the bash startup files
+  that put `home.sessionPath` (`~/go/bin`, `~/.npm-global/bin`) on a bash
+  login shell's PATH - zsh is still the shell everything else here is
+  built around. On a machine that already has its own `~/.bashrc`,
+  `~/.bash_profile` or `~/.profile`, home-manager will refuse to overwrite
+  them: move them aside once, or pass `-b hm-backup` to the switch.
 - `modules/desktop.nix` - ghostty, fonts, git *identity*, and the
   local-machine Claude settings variant (`home/.claude/settings.json`,
   axi-tool hooks included) - anything that needs a screen, a local
@@ -82,9 +88,18 @@ and `home-linux`, `modules/fabrica-sync.sh` reads the tip of
 `master` from `github.com/inactdev/fabrica` with `git ls-remote`,
 compares it against the commit the installed copy was built from (its own
 build info, or failing that what this step recorded the last time it
-installed), and runs `npm install -g github:inactdev/fabrica` only when
-the two differ. Matching commits cost one network read and change
-nothing; a machine with no Fabrica on it at all gets one installed.
+installed), and installs only when the two differ. Matching commits cost
+one network read and change nothing; a machine with no Fabrica on it at
+all gets one installed.
+
+The install itself is `npm pack github:inactdev/fabrica` followed by
+`npm install -g` of the tarball that produced, rather than one
+`npm install -g github:inactdev/fabrica`. The one-step form cannot work:
+npm installs a git spec globally by symlinking the prefix at its own
+temporary clone and then deleting the clone, so Fabrica's build step is
+left running in a directory that no longer exists. Packing first runs
+that build step where it is safe to, and the tarball installs like any
+other package.
 
 Two details worth knowing:
 

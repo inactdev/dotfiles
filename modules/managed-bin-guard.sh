@@ -206,7 +206,9 @@ mbg_report() {
 
   if [ -z "$found" ]; then
     warn "a fresh $shell login shell finds no $tool at all: $managed_real is not on its login PATH."
-    warn "whatever puts that directory on PATH for $shell is missing (modules/core.nix does it for zsh)."
+    warn "whatever puts that directory on PATH for $shell is missing: modules/core.nix does it"
+    warn "for zsh in its own PATH line, and for bash by enabling programs.bash, whose startup"
+    warn "files are what source home-manager's hm-session-vars.sh."
     return 0
   fi
 

@@ -81,6 +81,34 @@ in
 
   programs.starship.enable = true;
 
+  # Enabled for the startup files it writes, not because anyone's daily
+  # shell changes: zsh (below) stays that. But bash is what a login over
+  # ssh, a script, an agent harness and the managed-binary guard all end up
+  # in, and home-manager only writes ~/.bash_profile, ~/.bashrc and
+  # ~/.profile when this is on. Those files are the only thing that puts
+  # home.sessionPath on a bash login shell's PATH: ~/.bash_profile sources
+  # ~/.profile, which sources hm-session-vars.sh, which is where
+  # home-manager exports the session path - prepending it, so the managed
+  # directories come ahead of whatever was there already. Without them a
+  # bash login shell saw neither ~/go/bin nor ~/.npm-global/bin, because
+  # the line that covers zsh is in the zsh block below and nowhere else -
+  # so a managed tool was installed and then not found, which is exactly
+  # what the guard at the end of each sync script exists to catch. Nothing
+  # of zsh's ordering is duplicated here on purpose: hm-session-vars is the
+  # only PATH edit on the bash side, so there is no hand-added
+  # ~/.local/bin for a stale copy to be found in first.
+  #
+  # One consequence on a machine that has never been switched: those three
+  # files become files home-manager owns, and it stops rather than
+  # overwrite an existing regular file at any of them unless the switch is
+  # given a backup extension. install.sh passes one (`-b hm-backup`) and
+  # personal-mac's nix-darwin configuration sets one; `./run.sh`'s
+  # home-linux switch passes none, so a box with its distribution's own
+  # ~/.bashrc or ~/.profile still in place needs those moved aside once by
+  # hand, or the switch given `-b`, before the first apply after this
+  # lands.
+  programs.bash.enable = true;
+
   programs.zsh = {
     enable = true;
     autosuggestion.enable = true;
