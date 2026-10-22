@@ -50,9 +50,10 @@ in
 # repositories, installed and kept current by home-manager rather than by
 # hand. See modules/fabrica-sync.sh for what the activation step does and
 # every way it declines to do it; the short version is that it compares
-# the installed copy's commit against origin/master and only runs
-# `npm install -g github:inactdev/fabrica` when they differ, so the cost
-# of an ordinary switch is one `git ls-remote`.
+# the installed copy's commit against origin/master and only installs
+# (`npm pack` of the git spec, then `npm install -g` of that tarball -
+# the script's own comments say why it is two steps) when they differ, so
+# the cost of an ordinary switch is one `git ls-remote`.
 #
 # `fabrica update` stays the day-to-day way to move Fabrica forward. This
 # step is the floor under it, not a replacement for it: it guarantees that
@@ -68,9 +69,18 @@ in
 {
   home.sessionPath = [ managedPaths.npmBin ];
 
-  # entryAfter "writeBoundary" for the same reason every other activation
-  # step here uses it: it must run after home-manager has finished writing
-  # the new generation's files.
+  # entryAfter "linkGeneration", not "writeBoundary": the step has to run
+  # after the new generation's files are *linked into $HOME*, not merely
+  # written into the store. home-manager's writeBoundary is only the point
+  # after which a step may touch the user's files at all; linkGeneration is
+  # the step that creates the symlinks, and it comes later. The difference
+  # is load-bearing here because the sync script ends by asking a fresh
+  # login shell of each shell what `command -v fabrica` answers (see
+  # modules/managed-bin-guard.sh), and on a home directory that has never
+  # been switched before, a shell started any earlier than this has no
+  # startup files yet - so the probe finds nothing and the guard reports a
+  # managed tool that a shell cannot see, on the one run where that is
+  # guaranteed to be wrong.
   #
   # The script handles its own failures and exits 0 on all of them, so the
   # `||` is only a backstop against an unexpected one (a missing
@@ -78,8 +88,26 @@ in
   # rest of an activation over. PATH is set here rather than inside the
   # script so the store paths stay declared where every other Nix-level
   # dependency in this repo is declared.
-  home.activation.installFabrica = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    $DRY_RUN_CMD PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
+  #
+  # `env` sets that PATH, and the two details about this line are both
+  # load-bearing:
+  #
+  #   - `run` rather than the deprecated `$DRY_RUN_CMD` prefix, which
+  #     home-manager keeps only for backward compatibility. `run` executes
+  #     its arguments, echoing them instead on a dry run.
+  #   - `env`, not a bare leading `PATH=...` word. A shell only treats
+  #     `PATH=...` as an assignment when it is the first word *at parse
+  #     time*, so `$DRY_RUN_CMD PATH=... bash ...` left `PATH=...` standing
+  #     as the command name the moment DRY_RUN_CMD expanded to nothing -
+  #     which is every real switch - and the step died with
+  #     `PATH=/nix/store/...: No such file or directory` before the sync
+  #     script was ever reached. `run` would do the same thing for the same
+  #     reason: it dispatches through `"$@"`, so a leading `PATH=...` is an
+  #     argument, not an assignment. `env` is what actually applies it.
+  #     install.container-test.sh activates this step for real on Linux so
+  #     that a return to either shape fails CI instead of passing it.
+  home.activation.installFabrica = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+    run ${pkgs.coreutils}/bin/env PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
       ${fabricaSync} ${lib.escapeShellArg npmPrefix} ${managedBinGuard} \
       || echo "fabrica-sync exited non-zero; continuing activation." >&2
   '';

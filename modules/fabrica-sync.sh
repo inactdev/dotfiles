@@ -93,10 +93,11 @@ commit_from_json() {
 
 # What commit is the installed copy built from? Prefer Fabrica's own build
 # info, which stays right even when the install came from `fabrica update`
-# rather than from here. npm itself is no help: a global install from a git
-# spec records the resolved commit nowhere - not in the installed
-# package.json, not in a lockfile, not in `npm ls --json --long` - so the
-# second source is the commit this script recorded when it last installed.
+# rather than from here. npm itself is no help: an install that started
+# from a git spec records the resolved commit nowhere - not in the
+# installed package.json, not in a lockfile, not in `npm ls --json --long`
+# - so the second source is the commit this script recorded when it last
+# installed.
 # When neither answers, the caller treats the installed copy as unknown and
 # reinstalls once, which establishes the record for every later switch.
 installed_commit() {
@@ -121,13 +122,66 @@ installed_commit() {
   fi
 }
 
+# Install the remote tip into $prefix, in two steps and never straight
+# from the git spec. Exit status says whether it worked; the caller owns
+# the directory passed in and deletes it either way.
+#
+# `npm install -g <git spec>` cannot do this job, and not for any reason
+# to do with this script's environment: npm clones the spec into a
+# temporary directory of its own (under ~/.npm/_cacache/tmp), and in
+# global mode it installs that clone by *symlinking* the prefix at it and
+# then removing the clone - so a lifecycle script, Fabrica's own `prepare`
+# or esbuild's `postinstall`, is asked to run in a directory that no
+# longer exists. That is the `npm error enoent spawn sh ENOENT` the
+# install dies with, and `--ignore-scripts` only trades it for a dangling
+# symlink to a deleted git-clone directory with no node_modules under it.
+#
+# `npm pack <git spec>` takes the same clone through the same `prepare` -
+# which is what writes the build-info.json installed_commit reads back
+# later - and then writes the result as a tarball where
+# --pack-destination says, leaving nothing behind for an install to point
+# at. Installing that tarball is an ordinary install: real files under
+# the prefix, dependencies resolved, scripts run in a directory that
+# stays put.
+#
+# The tarball is found by globbing rather than by name: npm names it from
+# the packed package.json (<name>-<version>.tgz), which this script has
+# no other reason to know. The directory is this run's own and was just
+# created, so exactly one .tgz in it is the one that was just packed -
+# any other count means something happened that was not planned for, and
+# nothing is installed.
+install_from_pack() {
+  local tmpdir=$1
+  local candidate
+  local -a tarballs=()
+
+  if ! npm pack "$npm_spec" --pack-destination "$tmpdir" >/dev/null; then
+    warn "npm pack $npm_spec failed."
+    return 1
+  fi
+
+  for candidate in "$tmpdir"/*.tgz; do
+    [ -f "$candidate" ] || continue
+    tarballs+=("$candidate")
+  done
+  if [ "${#tarballs[@]}" -ne 1 ]; then
+    warn "npm pack left ${#tarballs[@]} tarballs in $tmpdir rather than one."
+    return 1
+  fi
+
+  if ! npm install -g --prefix "$prefix" "${tarballs[0]}"; then
+    warn "npm install -g ${tarballs[0]} failed."
+    return 1
+  fi
+}
+
 # Everything the install decision needs, as one function rather than as the
 # top level of the script: every "nothing more to do here" below is a
 # `return 0`, so the shadowing guard at the tail still runs after it. An
 # `exit 0` would skip the guard on exactly the quiet paths - already
 # current, no network - where a shadowing copy goes unnoticed longest.
 sync_to_remote_tip() {
-  local ls_remote remote_commit current_commit
+  local ls_remote remote_commit current_commit tmpdir
 
   # Read the remote tip. GIT_TERMINAL_PROMPT=0 so a host without
   # credentials for a private repo fails instead of blocking a
@@ -158,11 +212,22 @@ sync_to_remote_tip() {
   fi
 
   say "installing $npm_spec into $prefix (have: ${current_commit:-none recorded}, $branch: $remote_commit)"
-  if ! npm install -g --prefix "$prefix" "$npm_spec"; then
-    warn "npm install -g $npm_spec failed, so Fabrica was not updated to $remote_commit."
+
+  # The pack and the install both happen in a directory of this run's own,
+  # removed whichever way they go: a tarball left in $TMPDIR would be
+  # mistaken for nothing, but it is a full copy of Fabrica's source and
+  # there is no reason for it to outlive the install it was packed for.
+  if ! tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fabrica-sync.XXXXXX"); then
+    warn "could not make a temporary directory, so Fabrica was not updated to $remote_commit."
+    return 0
+  fi
+  if ! install_from_pack "$tmpdir"; then
+    rm -rf "$tmpdir"
+    warn "so Fabrica was not updated to $remote_commit."
     warn "re-run the switch, or \`fabrica update\`, once the cause is cleared."
     return 0
   fi
+  rm -rf "$tmpdir"
 
   if ! (mkdir -p "$state_dir" && printf '%s\n' "$remote_commit" >"$state_file"); then
     warn "installed $remote_commit but could not record it in $state_file;"

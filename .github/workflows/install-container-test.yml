@@ -5,6 +5,14 @@ name: install.sh container rehearsal
 # `--platform linux/amd64` locally on an Apple Silicon dev machine (where
 # Nix's own build sandbox can't load its seccomp BPF program under
 # emulation). See AGENTS.md and install.container-test.sh.
+#
+# Despite the name, this job is also the only place that runs a real
+# home-manager activation of modules/fabrica.nix's and
+# modules/inspector.nix's activation steps - the tail of
+# install.container-test.sh switches flake.nix's
+# homeConfigurations."ci-linux" in the same container, as its own
+# throwaway user. The path filter below already covers it (modules/**,
+# flake.nix, install.container-test.sh).
 on:
   push:
     branches: [master]
