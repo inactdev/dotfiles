@@ -44,6 +44,13 @@ in
 # header for every way it declines to act, starting with never touching a
 # dirty checkout; this file only supplies the clock and the environment.
 #
+# This is the host that still applies by itself, and the script decides
+# that by reading .dotfiles-host rather than by being on Linux - so this
+# unit passes it nothing about the host either. The switch here needs no
+# sudo, which is the whole reason: personal-mac's needs root, has no
+# terminal to type a password at, and therefore only announces (see
+# modules/mac.nix).
+#
 # This is also what makes a fresh cloud Linux box self-maintaining with no
 # extra steps beyond `./run.sh bootstrap home-linux`. The one thing
 # home-manager cannot declare for it: a *user* timer only runs while that

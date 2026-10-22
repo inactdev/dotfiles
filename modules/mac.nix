@@ -18,11 +18,13 @@ let
 
   # launchd agents inherit almost nothing, so the job gets an explicit PATH
   # of fixed directories - also generation-independent, for the reason
-  # above. It needs: git and the rest of the CLI tooling (the per-user
-  # profile), `nix` itself (the daemon profile), `darwin-rebuild` and
-  # `sudo` (/run/current-system/sw/bin and /usr/bin), and Homebrew's prefix
-  # because `./run.sh rebuild` ends in a darwin-rebuild that drives
-  # `brew bundle`.
+  # above. What it actually needs on this host is small, because the job
+  # here only fetches and announces (see the agent below): git and the rest
+  # of the CLI tooling (the per-user profile), and `osascript` for the
+  # notification (/usr/bin). The remaining directories are the ordinary
+  # system ones plus Homebrew's prefix, kept as a floor so a git (or
+  # anything else the script grows) found outside the Nix profile still
+  # resolves - not because a switch runs from here any more.
   schedulerPath = lib.concatStringsSep ":" [
     "${config.home.profileDirectory}/bin"
     "/run/current-system/sw/bin"
@@ -46,22 +48,26 @@ in
   home.file.".config/herdr".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/herdr";
 
-  # Self-applying dotfiles: fetch ~/.dotfiles every 30 minutes and once at
+  # Self-updating dotfiles: fetch ~/.dotfiles every 30 minutes and once at
   # login, and when origin/master has moved ahead of a clean master
-  # checkout, fast-forward and `./run.sh rebuild`. All of the judgement
-  # lives in the script (see its header for every way it declines to act,
-  # starting with never touching a dirty checkout); this only supplies the
-  # clock and the environment.
+  # checkout, fast-forward to it - and then stop, with a notification that
+  # an update is ready and the one command to apply it. All of the
+  # judgement lives in the script (see its header for every way it declines
+  # to act, starting with never touching a dirty checkout); this only
+  # supplies the clock and the environment.
   #
-  # One thing to know before expecting this to work on this host:
-  # `./run.sh rebuild` here ends in `sudo darwin-rebuild switch`, and a
-  # launchd *user* agent has no terminal for sudo to prompt at. Until this
-  # Mac has a passwordless sudo rule for darwin-rebuild, every run that
-  # finds new commits will fast-forward, fail the rebuild, notify, and
-  # retry on the next tick - loudly, by design, rather than silently
-  # pretending to have applied anything. README.md says what to add; a root
-  # launchd.daemons job in configuration.nix is the other way out, and is
-  # deliberately not what this is.
+  # The script decides that by reading .dotfiles-host, not by being on a
+  # Mac, so this agent passes it nothing about the host. Why this host
+  # announces instead of applying: `./run.sh rebuild` here ends in `sudo
+  # darwin-rebuild switch`, and a launchd *user* agent has no terminal for
+  # sudo to prompt at, so a scheduled switch could only ever fail with
+  # "sudo: a terminal is required to read the password" and retry every
+  # half hour. The two ways to make it switch anyway were both declined: a
+  # passwordless sudo rule in /etc/sudoers.d (a privilege widened by hand,
+  # outside this repo, to save one command), and a root launchd.daemons job
+  # in configuration.nix (a timer switching the whole system as root).
+  # home-linux keeps applying by itself, because its switch is a plain
+  # user-level home-manager switch with no sudo in it at all.
   #
   # StandardOutPath is Library/Logs and NOT the script's own
   # ~/.local/state/dotfiles-auto/apply.log: the script trims that file by

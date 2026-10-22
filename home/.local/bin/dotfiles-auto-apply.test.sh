@@ -5,6 +5,13 @@
 # used, and for the same reason: nothing here may reach this machine's real
 # ~/.dotfiles, its real origin, or a real `./run.sh rebuild`.
 #
+# Which of the two behaviours the script takes is decided by the scratch
+# checkout's own .dotfiles-host, exactly as on a real machine, so every
+# test below declares the host it is about: `home-linux` applies, and
+# `personal-mac` only announces (it has no terminal for sudo to prompt at -
+# see the script's header). `setup` writes home-linux; `set_host` overrides
+# it.
+#
 # "Fully hermetic" is stricter than that suite's PATH, deliberately. The
 # mock directory is the ENTIRE PATH (even bash, which the `#!/usr/bin/env
 # bash` shebang resolves through it), with each real tool the script needs
@@ -79,10 +86,16 @@ OTHER="3333333333333333333333333333333333333333"
 #   fetch_rc    -> exit status of `git fetch`
 #   merge_rc    -> exit status of `git merge --ff-only`
 #   rebuild_rc  -> exit status of the mocked ./run.sh
+# and, when they exist:
+#   rebuild_output     -> extra text the mocked ./run.sh prints (a real
+#                         switch's own output, e.g. sudo's refusal)
+#   rebuild_calls_sudo -> the mocked ./run.sh runs `sudo true`, so the
+#                         sudo guard the script installs can be observed
 # and they record what was asked of them:
 #   git.log     -> one line per git invocation (flags stripped)
 #   rebuild.log -> one line per ./run.sh invocation, with its $PWD
 #   notify.log  -> one line per osascript/notify-send invocation
+#   sudo.log    -> one line per sudo invocation, as sudo itself saw it
 
 mock_git() {
   cat >"$MOCK_DIR/git" <<'MOCK'
@@ -168,9 +181,36 @@ mock_checkout() {
 set -eu
 printf '%s in %s\n' "$*" "$PWD" >>"$FIXTURES/rebuild.log"
 echo "mock run.sh: $* (pretending to switch)"
+if [ -f "$FIXTURES/rebuild_output" ]; then
+  cat "$FIXTURES/rebuild_output"
+fi
+# Stands in for anything inside a real switch that shells out to sudo, so
+# the guard the script puts on PATH before the rebuild can be observed.
+if [ -f "$FIXTURES/rebuild_calls_sudo" ]; then
+  sudo true
+fi
 exit "$(cat "$FIXTURES/rebuild_rc")"
 MOCK
   chmod +x "$HOME/.dotfiles/run.sh"
+}
+
+# The marker run.sh writes and this job reads to know which host it is on.
+# Line two is run.sh's nix/no-nix flag, which the job has no use for - it is
+# written anyway so the fixture is the same file shape as the real one.
+set_host() {
+  printf '%s\nnix\n' "$1" >"$HOME/.dotfiles/.dotfiles-host"
+}
+
+# A `sudo` that cannot do anything but record how it was called. The guard
+# the script installs resolves THIS as the real sudo and execs it with -n
+# prepended, which is what the sudo tests assert.
+mock_sudo() {
+  cat >"$MOCK_DIR/sudo" <<'MOCK'
+#!/bin/sh
+printf 'sudo %s\n' "$*" >>"$FIXTURES/sudo.log"
+exit 0
+MOCK
+  chmod +x "$MOCK_DIR/sudo"
 }
 
 mock_notifier() {
@@ -187,7 +227,7 @@ MOCK
 # header for why the real PATH is never on it.
 link_real_tools() {
   local tool path
-  for tool in bash date mkdir tail mv rm cat tr tee; do
+  for tool in bash date mkdir chmod tail mv rm cat tr tee; do
     path=$(command -v "$tool") || {
       echo "test setup: $tool not found on PATH" >&2
       exit 1
@@ -208,11 +248,15 @@ setup() {
   STATE_DIR="$HOME/.local/state/dotfiles-auto"
   LOG="$STATE_DIR/apply.log"
   APPLIED="$STATE_DIR/last-applied"
+  ANNOUNCED="$STATE_DIR/last-announced"
   mkdir -p "$HOME" "$FIXTURES" "$MOCK_DIR"
 
   link_real_tools
   mock_git
   mock_checkout
+  # The applying host, so every test that is not about the split reads as
+  # it did before there was one.
+  set_host home-linux
 
   printf '%s\n' "$OLD" >"$FIXTURES/head"
   printf '%s\n' "$NEW" >"$FIXTURES/remote"
@@ -225,6 +269,7 @@ setup() {
   : >"$FIXTURES/git.log"
   : >"$FIXTURES/rebuild.log"
   : >"$FIXTURES/notify.log"
+  : >"$FIXTURES/sudo.log"
 }
 
 teardown() {
@@ -244,8 +289,15 @@ run_apply() {
 git_log() { cat "$FIXTURES/git.log"; }
 rebuild_log() { cat "$FIXTURES/rebuild.log"; }
 notify_log() { cat "$FIXTURES/notify.log"; }
+sudo_log() { cat "$FIXTURES/sudo.log"; }
 log_file() { cat "$LOG" 2>/dev/null; }
 applied() { cat "$APPLIED" 2>/dev/null; }
+announced() { cat "$ANNOUNCED" 2>/dev/null; }
+
+# How many times a notification was raised - the difference between "told
+# once" and "told every half hour" is the whole point of several tests.
+# Every notifier mock writes exactly one line per invocation.
+notify_count() { wc -l <"$FIXTURES/notify.log" | tr -d ' '; }
 
 # Most tests want a machine that has already applied something, so the
 # first-run shortcut is not what they are measuring.
@@ -276,6 +328,7 @@ test_moved_and_clean_fast_forwards_and_rebuilds() {
 test_dirty_checkout_is_never_touched() {
   setup
   seed_applied "$OLD"
+  mock_notifier notify-send
   printf ' M modules/core.nix\n?? scratch.txt\n' >"$FIXTURES/status"
   run_apply
   assert_eq "dirty: exits 0 (a work-in-progress checkout is not a failure)" "0" "$rc"
@@ -285,7 +338,25 @@ test_dirty_checkout_is_never_touched() {
   assert_contains "dirty: names the untracked file too" "$(log_file)" "?? scratch.txt"
   assert_contains "dirty: says what it would have applied" "$(log_file)" "origin/master is at 222222222222"
   assert_eq "dirty: leaves the recorded commit alone" "$OLD" "$(applied)"
-  assert_eq "dirty: notifies nobody" "" "$(notify_log)"
+  assert_contains "dirty: never silent - the checkout needs a hand" "$(notify_log)" "uncommitted changes"
+  assert_eq "dirty: notified once" "1" "$(notify_count)"
+
+  # The same uncommitted edit half an hour later is the same occurrence:
+  # logged again, not notified again.
+  run_apply
+  assert_eq "dirty: second run still exits 0" "0" "$rc"
+  assert_eq "dirty: second run raises no second notification" "1" "$(notify_count)"
+  assert_contains "dirty: second run still logs what is in the way" "$out" "M modules/core.nix"
+
+  # Once it is out of the way the next blocked fetch is a new occurrence,
+  # so it is notified about again rather than swallowed forever.
+  : >"$FIXTURES/status"
+  run_apply
+  assert_eq "dirty: cleaning up lets the fast-forward happen" "0" "$rc"
+  printf '%s\n' "$OTHER" >"$FIXTURES/remote"
+  printf ' M modules/core.nix\n' >"$FIXTURES/status"
+  run_apply
+  assert_eq "dirty: a fresh occurrence notifies again" "2" "$(notify_count)"
   teardown
 }
 
@@ -342,21 +413,35 @@ test_divergence_notifies_and_touches_nothing() {
   assert_contains "diverged: notifies, because only a human can fix it" "$(notify_log)" "notify-send"
   assert_contains "diverged: the notification says what happened" "$(notify_log)" "diverged"
   assert_eq "diverged: leaves the recorded commit alone" "$OLD" "$(applied)"
+  assert_eq "diverged: notified once" "1" "$(notify_count)"
+
+  run_apply
+  assert_eq "diverged: second run still exits non-zero" "1" "$rc"
+  assert_eq "diverged: second run raises no second notification" "1" "$(notify_count)"
+  assert_contains "diverged: second run still logs it" "$out" "share no descent"
   teardown
 }
 
-test_local_ahead_is_quiet() {
+test_local_ahead_notifies_once_and_exits_zero() {
   setup
   seed_applied "$OLD"
   mock_notifier notify-send
   printf 'ahead\n' >"$FIXTURES/relation"
   printf '%s\n' "$OTHER" >"$FIXTURES/remote"
   run_apply
-  assert_eq "ahead: exits 0 (an unpushed commit is not an incident)" "0" "$rc"
+  assert_eq "ahead: exits 0 (an unpushed commit is not a failure)" "0" "$rc"
   assert_not_contains "ahead: never merges" "$(git_log)" "merge --ff-only"
   assert_eq "ahead: never rebuilds" "" "$(rebuild_log)"
   assert_contains "ahead: logs that there is nothing to fast-forward" "$(log_file)" "nothing to fast-forward"
-  assert_eq "ahead: notifies nobody" "" "$(notify_log)"
+  assert_contains "ahead: says a fetch it could not act on, out loud" "$(notify_log)" "not on origin/master"
+  assert_eq "ahead: once, not once per run" "1" "$(notify_count)"
+
+  # Same situation 30 minutes later: the log still records it, the human is
+  # not interrupted a second time.
+  run_apply
+  assert_eq "ahead: second run still exits 0" "0" "$rc"
+  assert_eq "ahead: second run raises no second notification" "1" "$(notify_count)"
+  assert_contains "ahead: second run says why it stayed quiet" "$out" "already notified about this"
   teardown
 }
 
@@ -375,6 +460,195 @@ test_local_commit_on_master_is_applied_too() {
   assert_not_contains "local commit: nothing to merge" "$(git_log)" "merge --ff-only"
   assert_eq "local commit: applies it" "rebuild in $HOME/.dotfiles" "$(rebuild_log)"
   assert_eq "local commit: records it" "$NEW" "$(applied)"
+  teardown
+}
+
+# --- which host this machine is -----------------------------------------
+
+test_missing_host_marker_refuses_before_fetching() {
+  setup
+  mock_notifier notify-send
+  rm -f "$HOME/.dotfiles/.dotfiles-host"
+  run_apply
+  assert_eq "no marker: exits non-zero" "1" "$rc"
+  assert_eq "no marker: never runs git at all" "" "$(git_log)"
+  assert_eq "no marker: never rebuilds" "" "$(rebuild_log)"
+  assert_contains "no marker: names the file it wanted" "$(log_file)" ".dotfiles-host"
+  assert_contains "no marker: says it will not guess what run.sh would not" "$(log_file)" "will not"
+  assert_contains "no marker: says how to record it" "$(log_file)" "./run.sh choose"
+  teardown
+}
+
+test_unknown_host_marker_refuses_before_fetching() {
+  setup
+  set_host "some-other-box"
+  run_apply
+  assert_eq "unknown host: exits non-zero" "1" "$rc"
+  assert_eq "unknown host: never runs git at all" "" "$(git_log)"
+  assert_eq "unknown host: never rebuilds" "" "$(rebuild_log)"
+  assert_contains "unknown host: names the host it found" "$(log_file)" "some-other-box"
+  assert_contains "unknown host: names the file" "$(log_file)" ".dotfiles-host"
+  teardown
+}
+
+test_work_host_marker_refuses_before_fetching() {
+  setup
+  set_host "work"
+  run_apply
+  assert_eq "work host: exits non-zero" "1" "$rc"
+  assert_eq "work host: never runs git at all" "" "$(git_log)"
+  assert_eq "work host: never rebuilds" "" "$(rebuild_log)"
+  assert_contains "work host: says why there is nothing to schedule" "$(log_file)" "no Nix switch"
+  teardown
+}
+
+test_host_marker_trailing_whitespace_is_not_a_different_host() {
+  setup
+  seed_applied "$OLD"
+  printf 'personal-mac \r\nnix\n' >"$HOME/.dotfiles/.dotfiles-host"
+  run_apply
+  assert_eq "whitespace in the marker: still a known host" "0" "$rc"
+  assert_contains "whitespace in the marker: announces" "$(log_file)" "an update is ready"
+  teardown
+}
+
+# --- personal-mac: announce, never switch -------------------------------
+
+test_personal_mac_announces_and_never_rebuilds() {
+  setup
+  set_host personal-mac
+  seed_applied "$OLD"
+  mock_notifier osascript
+  run_apply
+  assert_eq "mac: exits 0" "0" "$rc"
+  assert_contains "mac: still fast-forwards the checkout" "$(git_log)" "merge --ff-only refs/remotes/origin/master"
+  assert_eq "mac: never runs ./run.sh, so sudo is never reached" "" "$(rebuild_log)"
+  assert_eq "mac: never runs sudo" "" "$(sudo_log)"
+  assert_contains "mac: logs that an update is ready" "$(log_file)" "an update is ready"
+  assert_contains "mac: logs the commit" "$(log_file)" "222222222222"
+  assert_contains "mac: logs the one command to run" "$(log_file)" "cd ~/.dotfiles && ./run.sh rebuild"
+  assert_contains "mac: notifies through osascript" "$(notify_log)" "display notification"
+  assert_contains "mac: the notification carries the same command" "$(notify_log)" "cd ~/.dotfiles && ./run.sh rebuild"
+  assert_contains "mac: the notification is titled" "$(notify_log)" "dotfiles update ready"
+  assert_eq "mac: does NOT claim the update was applied" "$OLD" "$(applied)"
+  assert_eq "mac: records which commit it announced" "$NEW" "$(announced)"
+  teardown
+}
+
+test_personal_mac_notifies_once_per_upstream_commit() {
+  setup
+  set_host personal-mac
+  seed_applied "$OLD"
+  mock_notifier osascript
+  run_apply
+  assert_eq "mac: one notification for the first sighting" "1" "$(notify_count)"
+
+  # Nothing new upstream, nothing applied yet: the log keeps the record on
+  # every run, the human is interrupted once.
+  run_apply
+  assert_eq "mac: second run exits 0" "0" "$rc"
+  assert_contains "mac: second run logs the reminder again" "$out" "an update is ready"
+  assert_contains "mac: second run logs the command again" "$out" "cd ~/.dotfiles && ./run.sh rebuild"
+  assert_eq "mac: second run raises no second notification" "1" "$(notify_count)"
+  assert_contains "mac: second run says why it stayed quiet" "$out" "no second notification"
+  assert_eq "mac: still never rebuilds" "" "$(rebuild_log)"
+
+  # Master moves again: that is a new commit, so it is announced again.
+  printf 'behind\n' >"$FIXTURES/relation"
+  printf '%s\n' "$OTHER" >"$FIXTURES/remote"
+  run_apply
+  assert_eq "mac: a newer commit notifies again" "2" "$(notify_count)"
+  assert_eq "mac: and records the newer commit" "$OTHER" "$(announced)"
+  teardown
+}
+
+test_personal_mac_goes_quiet_once_the_rebuild_was_run() {
+  setup
+  set_host personal-mac
+  seed_applied "$OLD"
+  mock_notifier osascript
+  run_apply
+  assert_contains "mac: announced" "$(log_file)" "an update is ready"
+
+  # What `./run.sh rebuild` itself records when a human finally runs it.
+  seed_applied "$NEW"
+  run_apply
+  assert_eq "mac: exits 0 once the update was applied" "0" "$rc"
+  assert_contains "mac: and says there is nothing to do" "$out" "already applied 222222222222"
+  assert_not_contains "mac: the reminder stops" "$out" "an update is ready"
+  assert_eq "mac: with no further notification" "1" "$(notify_count)"
+  teardown
+}
+
+test_personal_mac_first_run_announces_nothing() {
+  setup
+  set_host personal-mac
+  mock_notifier osascript
+  printf '%s\n' "$OLD" >"$FIXTURES/remote"
+  run_apply
+  assert_eq "mac first run: exits 0" "0" "$rc"
+  assert_eq "mac first run: installing the timer notifies nobody" "" "$(notify_log)"
+  assert_eq "mac first run: records where the machine stands" "$OLD" "$(applied)"
+  assert_contains "mac first run: says what it did" "$(log_file)" "first run on this machine"
+  teardown
+}
+
+test_personal_mac_dirty_checkout_is_not_announced() {
+  setup
+  set_host personal-mac
+  seed_applied "$OLD"
+  mock_notifier osascript
+  printf ' M modules/core.nix\n' >"$FIXTURES/status"
+  run_apply
+  assert_eq "mac dirty: exits 0" "0" "$rc"
+  assert_not_contains "mac dirty: never merges" "$(git_log)" "merge --ff-only"
+  assert_not_contains "mac dirty: announces nothing it did not fast-forward to" "$(log_file)" "an update is ready"
+  assert_contains "mac dirty: says the checkout needs a hand instead" "$(notify_log)" "uncommitted changes"
+  assert_eq "mac dirty: announced nothing" "" "$(announced)"
+  teardown
+}
+
+# --- no password, ever --------------------------------------------------
+
+test_sudo_is_never_allowed_to_prompt() {
+  setup
+  seed_applied "$OLD"
+  mock_sudo
+  : >"$FIXTURES/rebuild_calls_sudo"
+  run_apply
+  assert_eq "sudo guard: the rebuild still succeeds" "0" "$rc"
+  assert_contains "sudo guard: sudo was reached" "$(sudo_log)" "sudo"
+  assert_contains "sudo guard: and could not prompt (-n)" "$(sudo_log)" "sudo -n"
+  teardown
+}
+
+test_a_sudo_password_prompt_is_called_out_in_the_log() {
+  setup
+  seed_applied "$OLD"
+  mock_notifier notify-send
+  printf '1\n' >"$FIXTURES/rebuild_rc"
+  printf 'sudo: a terminal is required to read the password\n' >"$FIXTURES/rebuild_output"
+  run_apply
+  assert_eq "sudo failure: exits non-zero" "1" "$rc"
+  assert_contains "sudo failure: the switch's own message is in the log" "$(log_file)" \
+    "a terminal is required to read the password"
+  assert_contains "sudo failure: and is explained rather than left raw" "$(log_file)" \
+    "no terminal to answer"
+  assert_contains "sudo failure: names the command to run by hand" "$(log_file)" \
+    "cd ~/.dotfiles && ./run.sh rebuild"
+  assert_eq "sudo failure: does NOT record the commit as applied" "$OLD" "$(applied)"
+  teardown
+}
+
+test_an_ordinary_rebuild_failure_is_not_blamed_on_sudo() {
+  setup
+  seed_applied "$OLD"
+  printf '1\n' >"$FIXTURES/rebuild_rc"
+  printf 'error: builder for /nix/store/... failed with exit code 1\n' >"$FIXTURES/rebuild_output"
+  run_apply
+  assert_eq "other failure: exits non-zero" "1" "$rc"
+  assert_contains "other failure: logs the failure" "$(log_file)" "./run.sh rebuild failed"
+  assert_not_contains "other failure: says nothing about terminals" "$(log_file)" "no terminal to answer"
   teardown
 }
 
@@ -562,8 +836,20 @@ test_dirty_checkout_with_nothing_to_do_is_quiet
 test_nothing_moved_does_nothing
 test_fetch_failure_is_logged_not_notified
 test_divergence_notifies_and_touches_nothing
-test_local_ahead_is_quiet
+test_local_ahead_notifies_once_and_exits_zero
 test_local_commit_on_master_is_applied_too
+test_missing_host_marker_refuses_before_fetching
+test_unknown_host_marker_refuses_before_fetching
+test_work_host_marker_refuses_before_fetching
+test_host_marker_trailing_whitespace_is_not_a_different_host
+test_personal_mac_announces_and_never_rebuilds
+test_personal_mac_notifies_once_per_upstream_commit
+test_personal_mac_goes_quiet_once_the_rebuild_was_run
+test_personal_mac_first_run_announces_nothing
+test_personal_mac_dirty_checkout_is_not_announced
+test_sudo_is_never_allowed_to_prompt
+test_a_sudo_password_prompt_is_called_out_in_the_log
+test_an_ordinary_rebuild_failure_is_not_blamed_on_sudo
 test_rebuild_failure_notifies_and_is_retried
 test_osascript_wins_over_notify_send_where_both_exist
 test_no_notifier_still_logs_and_fails

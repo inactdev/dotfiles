@@ -234,6 +234,12 @@ run_cmd_sandboxed() {
     # shellcheck disable=SC2034 # read by link_dotfiles, sourced dynamically above
     relink=0
     HOME="$TMP/home"
+    # Whatever run.sh records about this machine (record_applied_commit
+    # writes the commit the self-apply job reads) must land under the
+    # scratch HOME - an XDG_STATE_HOME inherited from the person running
+    # the suite would put it in their real state directory instead.
+    # shellcheck disable=SC2034 # read by record_applied_commit, sourced dynamically above
+    XDG_STATE_HOME=""
     # shellcheck disable=SC2030,SC2031 # PATH is deliberately remocked per subshell
     PATH="$MOCK_DIR:$PATH"
     "$fn" "$host" >/dev/null 2>&1
@@ -267,6 +273,38 @@ test_rebuild_personal_mac_still_uses_darwin_rebuild() {
     "sudo darwin-rebuild switch --flake"
   assert_contains "rebuild personal-mac targets the personal-mac flake attr" "$out" \
     ".dotfiles#personal-mac"
+  teardown
+}
+
+# home/.local/bin/dotfiles-auto-apply reads this file to know which commit
+# the machine is level with. On personal-mac that job never switches
+# anything itself (no terminal for sudo to prompt at, so it notifies that
+# an update is ready instead), which makes a hand-run rebuild the only
+# thing that can tell it the update has been applied - if this record were
+# missing, its reminder would go on being logged forever after you applied
+# the update.
+applied_record() {
+  cat "$TMP/home/.local/state/dotfiles-auto/last-applied" 2>/dev/null || true
+}
+
+test_rebuild_records_the_commit_for_the_self_apply_job() {
+  setup
+  local expected
+  expected=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+  run_cmd_sandboxed cmd_rebuild "personal-mac" >/dev/null
+  assert_eq "rebuild personal-mac records the applied commit" "$expected" "$(applied_record)"
+  teardown
+
+  setup
+  run_cmd_sandboxed cmd_rebuild "home-linux" >/dev/null
+  assert_eq "rebuild home-linux records the applied commit too" "$expected" "$(applied_record)"
+  teardown
+}
+
+test_plan_records_nothing() {
+  setup
+  run_cmd_sandboxed cmd_plan "personal-mac" >/dev/null
+  assert_eq "plan changes nothing, so it records nothing" "" "$(applied_record)"
   teardown
 }
 
@@ -600,6 +638,8 @@ test_rebuild_home_linux_uses_home_manager_not_darwin_rebuild
 test_rebuild_personal_mac_still_uses_darwin_rebuild
 test_plan_home_linux_builds_the_home_manager_activation_package
 test_plan_personal_mac_still_builds_the_darwin_system
+test_rebuild_records_the_commit_for_the_self_apply_job
+test_plan_records_nothing
 test_unresolvable_dir_aborts_before_any_write
 test_dir_resolving_outside_repo_aborts_before_any_write
 test_link_dotfiles_creates_when_absent

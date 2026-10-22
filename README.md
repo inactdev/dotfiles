@@ -45,11 +45,13 @@ get the full setup via Nix + home-manager, composed from `modules/`:
   by home-manager activation the same way (see "Inspector" below).
   `personal-mac` and `home-linux` import this; Codespaces does not.
 - `modules/mac.nix` - the herdr config symlink, and the launchd agent that
-  drives the self-apply job below. `personal-mac` only (herdr is a
+  drives the self-update job below (on this host it fetches and tells you
+  an update is ready; it never switches). `personal-mac` only (herdr is a
   Homebrew cask, and launchd doesn't exist elsewhere).
-- `modules/linux.nix` - the systemd user timer that drives the same
-  self-apply job. `home-linux` only; Codespaces does not import it (a
-  container is applied once at creation and then thrown away).
+- `modules/linux.nix` - the systemd user timer that drives the same job,
+  which on this host also applies what it fetched. `home-linux` only;
+  Codespaces does not import it (a container is applied once at creation
+  and then thrown away).
 - `modules/codespace.nix` - the Codespaces-only delta (Claude Code itself,
   since there's no Homebrew cask to lean on; which Claude settings file;
   the `cc` alias) - see the Codespaces section below.
@@ -190,36 +192,67 @@ refuses to start work when the wrong Inspector would win.
 
 ### Applying itself
 
-`personal-mac` and `home-linux` keep themselves applied without anyone
-running anything. Every 30 minutes, and once at login, the OS's own
-scheduler runs `home/.local/bin/dotfiles-auto-apply`, which fetches
-`~/.dotfiles`' origin and - when `origin/master` has moved ahead of a
-clean `master` checkout - fast-forwards to it and applies the result with
-`./run.sh rebuild`. A launchd user agent does the scheduling on the Mac
+`personal-mac` and `home-linux` keep themselves current without anyone
+running anything, and without ever asking for a password. Every 30
+minutes, and once at login, the OS's own scheduler runs
+`home/.local/bin/dotfiles-auto-apply`, which fetches `~/.dotfiles`' origin
+and - when `origin/master` has moved ahead of a clean `master` checkout -
+fast-forwards to it. A launchd user agent does the scheduling on the Mac
 (`modules/mac.nix`), a systemd user timer on Linux
 (`modules/linux.nix`), so a cloud Linux box set up as `home-linux` gets
 this from its bootstrap with nothing extra to install.
+
+What happens after the fast-forward differs by host, and the job decides
+which host it is on by reading `.dotfiles-host` - the same per-clone
+marker `./run.sh` itself reads. It never guesses from `uname` or the
+hostname: a missing or unrecognized marker stops the run with a log line
+naming the file, because a scheduled job must not guess what `./run.sh`
+would refuse to guess. (Record it once with `./run.sh choose`.)
+
+- **`personal-mac` announces, and switches nothing.** `./run.sh rebuild`
+  ends in `sudo darwin-rebuild switch` there, and a launchd *user* agent
+  has no terminal for sudo to prompt at - a scheduled switch could only
+  ever fail with *"sudo: a terminal is required to read the password"* and
+  retry every half hour. So this host fast-forwards the checkout, raises
+  one notification saying an update is ready, and logs the same line,
+  including the one command to apply it:
+  `cd ~/.dotfiles && ./run.sh rebuild`. The notification fires once per
+  new upstream commit, not once per run; the log line is written on every
+  run until you apply it, because the log is the record.
+- **`home-linux` applies it.** Its switch is a plain user-level
+  `home-manager switch` with no sudo anywhere in it, so there is nothing
+  to prompt for and nothing to wait on.
 
 Nothing has to be run by hand, but it is also just
 `dotfiles-auto-apply` on PATH if you want a run now.
 
 What it will not do:
 
+- **It never needs a password.** The one host whose switch needs root
+  doesn't switch here at all, and the switch that does run is wrapped in a
+  `sudo` that always carries `-n`, so anything that ever did ask for a
+  password fails in milliseconds with a log line that says exactly that
+  instead of blocking a job with no terminal.
 - **It never touches a dirty checkout.** Any staged or unstaged change,
   and any untracked file git doesn't ignore, stops the run before the
-  fast-forward - nothing merged, nothing applied, and the log says what is
-  in the way. A `~/.dotfiles` parked on a branch other than `master`, or
-  on a detached HEAD, is left alone the same way.
+  fast-forward - nothing merged, nothing applied, nothing announced, and
+  the log says what is in the way. A `~/.dotfiles` parked on a branch
+  other than `master`, or on a detached HEAD, is left alone the same way.
 - **It only ever fast-forwards.** A `master` that has genuinely diverged
   from `origin/master` is never merged, rebased or reset; that one
-  notifies and exits non-zero, because only you can resolve it. Local
-  commits you haven't pushed yet are an ordinary state and stay quiet.
-- **It never leaves the machine quietly behind.** The commit of the last
-  successful rebuild is recorded, so a rebuild that failed is retried on
-  the next run rather than forgotten once the checkout has caught up. That
-  record, not the fetch, is what decides a rebuild is due - so a commit
-  made straight on local `master`, or a `git pull` nobody applied, gets
-  applied on the next tick too.
+  notifies and exits non-zero, because only you can resolve it.
+- **It is never silent about a fetch it couldn't act on.** Uncommitted
+  changes, unpushed local commits and a real divergence each log their own
+  line and raise one notification per occurrence - once, not once every
+  half hour - on both hosts.
+- **It never leaves the machine quietly behind.** The commit this machine
+  last applied is recorded - by the job itself on `home-linux`, and by
+  `./run.sh rebuild` wherever you run it by hand - so a rebuild that
+  failed is retried on the next run rather than forgotten once the
+  checkout has caught up, and the Mac's reminder goes quiet the moment you
+  actually apply the update. That record, not the fetch, is what decides
+  an update is outstanding - so a commit made straight on local `master`,
+  or a `git pull` nobody applied, is picked up on the next tick too.
 
 Where to look when you want to know what it did:
 
@@ -228,24 +261,28 @@ Where to look when you want to know what it did:
 - The scheduler's own copy of the same lines:
   `~/Library/Logs/dotfiles-auto-apply.log` on the Mac,
   `journalctl --user -u dotfiles-auto-apply` on Linux.
-- A desktop notification, for the two outcomes that need you: a failed
-  rebuild, and a real divergence. The notifier is looked up at runtime
-  (`osascript`, then `notify-send`), so a headless box simply logs -
-  nothing fails for want of a notification daemon.
+- A desktop notification, for the outcomes that need you: an update ready
+  to apply on the Mac, a checkout that needs a hand, and a failed rebuild.
+  The notifier is looked up at runtime (`osascript`, then `notify-send`),
+  so a headless box simply logs - nothing fails for want of a notification
+  daemon.
+- `~/.local/state/dotfiles-auto/` also holds the three small state files
+  behind all of that: `last-applied` (the commit this machine applied),
+  `last-announced` (the commit it last notified you about) and
+  `last-blocked` (the last thing it couldn't act on, so it only tells you
+  once). Deleting any of them costs you at most one repeated notification.
 
-Two things it needs from the machine itself, which Nix can't declare:
+One thing it needs from the machine itself, which Nix can't declare:
 
-- **On `personal-mac`, passwordless sudo for `darwin-rebuild`.**
-  `./run.sh rebuild` ends in `sudo darwin-rebuild switch` there, and a
-  launchd user agent has no terminal for sudo to prompt at. Until a
-  `/etc/sudoers.d` rule lets that one command run without a password,
-  every run that finds new commits will fast-forward, fail the rebuild,
-  and notify - visibly, and retried, but not applied. `home-linux` needs
-  nothing: its rebuild is a plain user-level `home-manager switch`.
 - **On a headless Linux box, `loginctl enable-linger <user>` once, as
   root.** A systemd *user* timer only runs while that user's systemd
   instance is up; with linger it comes up at boot, without it only while
   someone is logged in.
+
+There is deliberately nothing to set up on the Mac - no `/etc/sudoers.d`
+rule, no root `launchd.daemons` job. Both were the obvious ways to let the
+timer switch the Mac itself; both buy that by widening what runs without a
+password, which is exactly what this is meant not to need.
 
 ## The work host (`--no-nix`)
 
@@ -365,10 +402,10 @@ opened for it will clone this repo and run `install.sh` on creation.
 
 ## Tests
 
-- `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, plus its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`.
+- `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`, and that a successful rebuild records the commit it applied where the self-update job reads it.
 - `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
-- `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-apply job (fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming, notifier lookup), against a mocked `git`, a mocked `./run.sh` and mocked notifiers on a hermetic PATH and a scratch `$HOME` - it never reaches a real remote, a real `~/.dotfiles`, or a real switch.
+- `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
 - `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 

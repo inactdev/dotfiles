@@ -1,52 +1,92 @@
 #!/usr/bin/env bash
 #
-# dotfiles-auto-apply - keep this machine's dotfiles applied without anyone
-# having to remember to apply them.
+# dotfiles-auto-apply - keep this machine's dotfiles current without anyone
+# having to remember to.
 #
 # Fetches ~/.dotfiles' origin and, when origin/master has moved ahead of a
-# clean master checkout, fast-forwards to it and applies the result with
-# `./run.sh rebuild`. The OS schedules it - every 30 minutes and once at
-# login - from a launchd user agent on personal-mac (modules/mac.nix) and a
-# systemd user timer on home-linux (modules/linux.nix). Nothing else runs
-# it, and nothing has to: it is also on PATH as `dotfiles-auto-apply`
-# (modules/desktop.nix symlinks it into ~/.local/bin) for a run by hand.
+# clean master checkout, fast-forwards to it. What happens *after* that
+# depends on which host this machine is, and the host is read from
+# .dotfiles-host - the marker run.sh itself reads to know which recipe it
+# applies. Never from `uname`, never from the hostname: a scheduled job
+# must not guess what run.sh would refuse to guess, so a missing or
+# unrecognized marker stops the run instead.
+#
+#   personal-mac  Announces, and switches nothing. `./run.sh rebuild` ends
+#                 in `sudo darwin-rebuild switch` there, and a launchd
+#                 *user* agent has no terminal for sudo to prompt at - a
+#                 scheduled switch could only ever fail with "sudo: a
+#                 terminal is required to read the password" and retry
+#                 every half hour. So this host fast-forwards, raises a
+#                 notification that an update is ready, logs the one
+#                 command to run, and stops. No sudo, no password, ever.
+#   home-linux    Applies it with `./run.sh rebuild`, which is a plain
+#                 user-level `home-manager switch` - no sudo anywhere in
+#                 it, so there is nothing to prompt for.
+#   anything else Refuses, naming .dotfiles-host, and fetches nothing.
+#
+# The OS schedules it - every 30 minutes and once at login - from a launchd
+# user agent on personal-mac (modules/mac.nix) and a systemd user timer on
+# home-linux (modules/linux.nix). Nothing else runs it, and nothing has to:
+# it is also on PATH as `dotfiles-auto-apply` (modules/desktop.nix symlinks
+# it into ~/.local/bin) for a run by hand.
 #
 # The rules, in the order they matter:
 #
+#   - It never needs a password. The one host whose switch needs root does
+#     not switch here at all, and the switch that does run is wrapped in a
+#     `sudo` that always carries -n, so anything that ever did ask for a
+#     password fails in milliseconds with a log line that says so rather
+#     than blocking a job with no terminal.
 #   - It never touches a dirty checkout. Any staged or unstaged change, and
 #     any untracked file git does not ignore, stops the run before the
-#     fast-forward: nothing is merged, nothing is applied, the log says what
-#     is in the way. A HEAD that is not master stops it the same way.
+#     fast-forward: nothing is merged, nothing is applied, nothing is
+#     announced, the log says what is in the way.  A HEAD that is not
+#     master stops it the same way.
 #   - It only ever fast-forwards. A master that has genuinely diverged from
 #     origin/master is never merged, rebased or reset - that one notifies
 #     and exits non-zero, because only a human can resolve it.
+#   - A fetch it could not act on is never silent. Uncommitted changes,
+#     local commits and a real divergence each log their own line and raise
+#     one notification per occurrence (not per run) on both hosts.
 #   - It never leaves the machine quietly behind. The commit of the last
-#     successful rebuild is recorded, so a rebuild that failed is retried on
-#     the next run instead of being forgotten the moment the checkout has
-#     caught up with the fetch.
-#   - Every failure is logged and exits non-zero. The two that need a human
-#     - a failed rebuild and a real divergence - also raise a desktop
-#     notification, but only where one can be delivered: the notifier is
-#     looked up at runtime (osascript, then notify-send), so this same
-#     script is correct on the captain's Mac and on a headless cloud box
-#     with no D-Bus session, where the log and journald are the record.
+#     successful rebuild is recorded - by this script on home-linux, and by
+#     `./run.sh rebuild` itself wherever it is run by hand - so a rebuild
+#     that failed is retried on the next run instead of being forgotten the
+#     moment the checkout has caught up with the fetch, and so the Mac's
+#     reminder goes quiet the moment the update is actually applied.
+#   - Every failure is logged and exits non-zero. The outcomes that need a
+#     human notify as well, but only where a notification can be delivered:
+#     the notifier is looked up at runtime (osascript, then notify-send),
+#     so this same script is correct on the captain's Mac and on a headless
+#     cloud box with no D-Bus session, where the log and journald are the
+#     record.
 #
 # Every line goes both to $log_file and to stdout, which the scheduler
 # captures too (launchd's StandardOutPath, journald on Linux). See
-# notes/20261021-dotfiles-auto-apply.md for why those are two different
-# files, why the unit files point at stable paths rather than store paths,
-# and what the Mac needs from sudo before any of this works there.
+# notes/20261022-dotfiles-auto-apply-no-password.md for why the Mac only
+# announces, and notes/20261021-dotfiles-auto-apply.md for why those are
+# two different files and why the unit files point at stable paths rather
+# than store paths.
 set -euo pipefail
 
 repo=$HOME/.dotfiles
 branch=master
 remote=origin
 remote_ref=refs/remotes/$remote/$branch
+host_file=$repo/.dotfiles-host
 
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-auto
 log_file=$state_dir/apply.log
 state_file=$state_dir/last-applied
+announce_file=$state_dir/last-announced
+blocked_file=$state_dir/last-blocked
+rebuild_out_file=$state_dir/last-rebuild-output
 log_max_lines=2000
+
+# The one command a human runs. Written once because it goes out three
+# ways - the log, the notification, and this file's own comments - and a
+# notification that names the wrong command is worse than none.
+rebuild_hint='cd ~/.dotfiles && ./run.sh rebuild'
 
 # --- log, notify ------------------------------------------------------
 
@@ -93,7 +133,7 @@ trim_log() {
 
 trap 'trim_log || true' EXIT
 
-# Best-effort desktop notification, for the two outcomes a human has to act
+# Best-effort desktop notification, for the outcomes a human has to act
 # on. The notifier is whatever this machine actually has: osascript on the
 # Mac, notify-send on a Linux box with a desktop session, nothing at all on
 # a headless one - where the log and the scheduler's own capture are the
@@ -120,6 +160,30 @@ notify() {
   fi
 }
 
+# One notification per *occurrence* of a fetch that could not be acted on,
+# not one per run: $1 is a key that changes only when the situation does
+# (its kind plus the two commits involved), so an uncommitted edit left in
+# ~/.dotfiles over a weekend interrupts once instead of 48 times. The log
+# line is written by the caller either way - the notification is the thing
+# that is deduplicated, because the log is the record.
+notify_once() {
+  local key=$1 title=$2 message=$3 seen
+  seen=$(cat "$blocked_file" 2>/dev/null) || seen=""
+  if [ "$seen" = "$key" ]; then
+    log "already notified about this; the line above is the record until it is dealt with."
+    return 0
+  fi
+  notify "$title" "$message"
+  printf '%s\n' "$key" >"$blocked_file" || true
+}
+
+# Forgets the last such occurrence, so the next one notifies again even if
+# it is the same kind. Called on every path where nothing is in the way.
+clear_notified_once() {
+  rm -f "$blocked_file" 2>/dev/null || true
+  return 0
+}
+
 # --- the checkout -----------------------------------------------------
 
 # The same shape of check run.sh makes on its own directory: a ~/.dotfiles
@@ -135,6 +199,46 @@ if ! cd "$repo"; then
   warn "could not enter $repo, so nothing was applied."
   exit 1
 fi
+
+# --- which host this machine is ---------------------------------------
+
+# Line one of .dotfiles-host, exactly as run.sh reads it (run.sh's $MARKER;
+# line two is its nix/no-nix flag, which this job has no use for). Read
+# with the shell rather than sed/head so the hermetic test suite does not
+# have to put another binary on its PATH for it. `|| true` because a
+# marker whose last line has no newline makes `read` report EOF while
+# still setting the variable, and under `set -e` that would end the run.
+host=""
+IFS= read -r host <"$host_file" 2>/dev/null || true
+# Trailing whitespace and a stray CR are not a different host.
+host=${host%%[[:space:]]*}
+
+case "$host" in
+  personal-mac)
+    # Announce only. See this file's header: the switch here needs root,
+    # and a launchd user agent has no terminal to type a password at.
+    mode=announce
+    ;;
+  home-linux)
+    mode=apply
+    ;;
+  work)
+    warn "$host_file says this is the 'work' host, which has no Nix switch to schedule."
+    warn "the work host is applied by work/bootstrap.sh when you run it; nothing was fetched."
+    exit 1
+    ;;
+  "")
+    warn "$host_file does not exist (or is empty), so this machine has not recorded which host it is."
+    warn "that is the same file ./run.sh reads to know which recipe it applies, and this job will not"
+    warn "guess what ./run.sh would not. Record it once with: cd ~/.dotfiles && ./run.sh choose"
+    exit 1
+    ;;
+  *)
+    warn "$host_file names host '$host', which this job knows nothing about (it handles personal-mac"
+    warn "and home-linux). Nothing was fetched. Re-record it with: cd ~/.dotfiles && ./run.sh choose"
+    exit 1
+    ;;
+esac
 
 # Only master is ever auto-applied. A checkout parked on a topic branch (or
 # detached) is somebody's work in progress; fast-forwarding master from
@@ -179,14 +283,24 @@ fi
 if [ "$relation" = diverged ]; then
   warn "$branch and $remote/$branch have diverged - ${head_commit:0:12} and ${remote_commit:0:12} share no descent."
   warn "nothing was fetched into the working tree and nothing was applied; resolve it by hand in $repo."
-  notify "dotfiles needs a hand" "master and origin/master have diverged. Nothing was applied; resolve it in ~/.dotfiles."
+  notify_once "diverged $head_commit $remote_commit" "dotfiles needs a hand" \
+    "master and origin/master have diverged. Nothing was applied; resolve it in ~/.dotfiles."
   exit 1
 fi
 
-# What the last successful rebuild applied. Empty on a machine that has
-# never run this, which is NOT treated as "rebuild now": installing the
-# timer must not trigger a switch nobody asked for.
+# What the last successful rebuild applied - written here on home-linux and
+# by `./run.sh rebuild` itself on both Nix hosts, which is what lets the
+# announce-only host find out that a human has caught up. Empty on a
+# machine that has never run either, which is NOT treated as "rebuild
+# now": installing the timer must not trigger a switch, or a notification,
+# nobody asked for.
 applied_commit=$(cat "$state_file" 2>/dev/null) || applied_commit=""
+
+# The commit the announce-only host last raised a notification for. It is
+# also the only thing that remembers, across runs, that an announcement is
+# still outstanding on a machine that has never recorded an applied commit
+# at all - see the update_due block below.
+announced_commit=$(cat "$announce_file" 2>/dev/null) || announced_commit=""
 
 record_applied() {
   if ! printf '%s\n' "$1" >"$state_file"; then
@@ -195,16 +309,25 @@ record_applied() {
   fi
 }
 
-# A rebuild is due when the fetch brought something to fast-forward to, or
-# when a previous run's rebuild never completed (the record is behind the
-# checkout). The second half is what stops a failed rebuild from being
-# forgotten the moment the fast-forward has already happened.
+# An update is outstanding when the fetch brought something to fast-forward
+# to, or when this machine is not level with its own checkout - a previous
+# rebuild that never completed, a commit made straight on local master, or
+# (on personal-mac) an announcement nobody has acted on yet. The second
+# half is what stops a failed rebuild from being forgotten the moment the
+# fast-forward has already happened.
 if [ "$relation" = behind ]; then
-  rebuild_due=1
+  update_due=1
 elif [ -n "$applied_commit" ] && [ "$applied_commit" != "$head_commit" ]; then
-  rebuild_due=1
+  update_due=1
+elif [ -n "$announced_commit" ] && [ "$announced_commit" != "$applied_commit" ]; then
+  # An announcement already went out for a commit nobody has applied yet.
+  # Without this, a Mac that has only ever been announced at (so it has no
+  # applied commit recorded) would read as a machine running this for the
+  # first time on its very next run, and go quiet about an update that is
+  # still waiting.
+  update_due=1
 else
-  rebuild_due=0
+  update_due=0
 fi
 
 # Checked once, and never worked around: a fast-forward into a dirty tree
@@ -214,12 +337,17 @@ fi
 # would fail anyway, and Nix reads untracked files straight into the flake.
 dirty=$(git -c status.showUntrackedFiles=normal status --porcelain)
 if [ -n "$dirty" ]; then
-  if [ "$rebuild_due" = 1 ]; then
+  if [ "$update_due" = 1 ]; then
     log "$remote/$branch is at ${remote_commit:0:12} and this checkout has uncommitted changes, so nothing was fast-forwarded or applied:"
     log "$dirty"
     log "commit, stash or discard them and the next run will pick it up."
+    notify_once "dirty $head_commit $remote_commit" "dotfiles needs a hand" \
+      "The ~/.dotfiles checkout has uncommitted changes, so ${remote_commit:0:12} was not applied. Commit, stash or discard them."
   else
+    # Nothing to fast-forward to, so the uncommitted work is in nobody's
+    # way - an ordinary state, and not worth interrupting anyone about.
     log "nothing to apply (checkout is at ${head_commit:0:12}, with uncommitted changes)."
+    clear_notified_once
   fi
   exit 0
 fi
@@ -232,26 +360,62 @@ if [ "$relation" = behind ]; then
   fi
   log "fast-forwarded $branch from ${head_commit:0:12} to ${remote_commit:0:12}."
   head_commit=$remote_commit
+  clear_notified_once
 elif [ "$relation" = ahead ]; then
-  # Unpushed local commits are an ordinary working state, not an incident:
-  # there is nothing to fast-forward to, so this is quiet by design.
+  # Unpushed local commits are not an incident, but they are a fetch this
+  # job could not act on - so they say so once, rather than every half
+  # hour, and the machine is still brought level with the checkout below.
   log "$branch is ahead of $remote/$branch (${head_commit:0:12} vs ${remote_commit:0:12}); nothing to fast-forward."
+  notify_once "ahead $head_commit $remote_commit" "dotfiles needs a hand" \
+    "master has commits that are not on origin/master, so there was nothing to fast-forward. Push them from ~/.dotfiles."
+else
+  clear_notified_once
 fi
 
 # A machine that has never run this and has nothing to fast-forward to
 # records where it stands and stops: installing the timer must not trigger
-# a switch nobody asked for. A first run that *did* have something to
-# fast-forward to falls through and applies it, which is the whole point.
-if [ -z "$applied_commit" ] && [ "$rebuild_due" = 0 ]; then
+# a switch, or a notification, nobody asked for. A first run that *did*
+# have something to fast-forward to falls through and acts on it, which is
+# the whole point.
+if [ -z "$applied_commit" ] && [ "$update_due" = 0 ]; then
   log "first run on this machine: recording ${head_commit:0:12} as applied without rebuilding."
   record_applied "$head_commit"
   exit 0
 fi
 
-if [ "$rebuild_due" = 0 ]; then
+if [ "$update_due" = 0 ]; then
   log "already applied ${head_commit:0:12}; nothing to do."
   exit 0
 fi
+
+# --- personal-mac: announce, switch nothing ---------------------------
+
+if [ "$mode" = announce ]; then
+  # The log line and the notification are deliberately the same sentence -
+  # whichever of the two you see, you see the command to run. The log line
+  # is written on every run while the update is outstanding, because the
+  # log is the record of what this machine knew when; the notification
+  # fires once per new commit, because an interruption every half hour is
+  # not a reminder, it is noise. Outstanding ends when `./run.sh rebuild`
+  # records the commit it applied - that is the only thing that tells this
+  # job a human has caught up.
+  ready_message="an update is ready: ~/.dotfiles is at ${head_commit:0:12} and this machine has not applied it. Run: $rebuild_hint"
+  log "$ready_message"
+
+  if [ "$announced_commit" = "$head_commit" ]; then
+    log "already notified about ${head_commit:0:12}; no second notification until master moves again."
+    exit 0
+  fi
+
+  notify "dotfiles update ready" "$ready_message"
+  if ! printf '%s\n' "$head_commit" >"$announce_file"; then
+    warn "could not record the notification in $announce_file;"
+    warn "harmless, but the next run will notify about ${head_commit:0:12} again."
+  fi
+  exit 0
+fi
+
+# --- home-linux: apply it ---------------------------------------------
 
 if [ -n "$applied_commit" ]; then
   log "applying ${head_commit:0:12} with ./run.sh rebuild (last applied: ${applied_commit:0:12})."
@@ -275,20 +439,69 @@ if [ -z "${NIX_REMOTE:-}" ] && [ -f /nix/var/nix/profiles/default/etc/profile.d/
   set -eu
 fi
 
+# Nothing in this host's switch uses sudo - `./run.sh rebuild` here is a
+# user-level `home-manager switch`. This is the floor under that promise:
+# any sudo reached from the rebuild below resolves to a shim that prepends
+# -n, so a rule that would need a password fails in milliseconds with
+# sudo's own "a password is required" instead of a job with no terminal
+# blocking on a prompt nobody can answer (a NOPASSWD rule still works
+# exactly as before). The real sudo is resolved *before* the shim goes on
+# PATH, and a resolution that lands inside the shim directory is declined,
+# so a second call could not build a shim that execs itself.
+install_sudo_guard() {
+  local real dir=$state_dir/sudo-guard
+  real=$(command -v sudo) || return 0
+  case "$real" in
+    "$dir"/*) return 0 ;;
+  esac
+  mkdir -p "$dir" || return 0
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf '%s\n' '# Written by dotfiles-auto-apply: a scheduled run has no terminal, so'
+    printf '%s\n' '# sudo is never allowed to ask for a password here.'
+    printf 'exec %s -n "$@"\n' "$real"
+  } >"$dir/sudo" || return 0
+  chmod +x "$dir/sudo" || return 0
+  PATH=$dir:$PATH
+  export PATH
+  return 0
+}
+
+install_sudo_guard
+
 # tee rather than a plain redirect so the switch's own output lands in both
-# records, the same as every line above. The status is read out of
-# PIPESTATUS rather than from the pipeline, so that it is run.sh's and only
-# run.sh's: under `pipefail` a tee that could not write would read as a
-# failed rebuild, which would notify about a switch that actually worked and
-# then retry it every half hour.
+# records, the same as every line above, and in a third file this script
+# can read back - the only way to tell a rebuild that failed for an
+# ordinary reason from one that failed for a password nobody can type.
+# stdin is /dev/null so nothing inside the switch can block on a prompt
+# either. The status is read out of PIPESTATUS rather than from the
+# pipeline, so that it is run.sh's and only run.sh's: under `pipefail` a
+# tee that could not write would read as a failed rebuild, which would
+# notify about a switch that actually worked and then retry it every half
+# hour.
+#
+# The third file is truncated first because tee appends to both: a run
+# killed between the tee and the `rm` below would otherwise leave output
+# for the next run to read back and blame the wrong thing on.
+: >"$rebuild_out_file" || true
 set +e
-./run.sh rebuild 2>&1 | tee -a "$log_file"
+./run.sh rebuild </dev/null 2>&1 | tee -a "$log_file" "$rebuild_out_file"
 rebuild_status=${PIPESTATUS[0]}
 set -e
+
+rebuild_output=$(cat "$rebuild_out_file" 2>/dev/null) || rebuild_output=""
+rm -f "$rebuild_out_file" 2>/dev/null || true
 
 if [ "$rebuild_status" != 0 ]; then
   warn "./run.sh rebuild failed, so this machine is still on the previous generation."
   warn "the checkout is at ${head_commit:0:12}; the rebuild is retried on the next run."
+  case "$rebuild_output" in
+    *"sudo: a password is required"* | *"sudo: a terminal is required"*)
+      warn "it failed on a sudo password prompt, which a scheduled run has no terminal to answer."
+      warn "sudo ran with -n, so it failed at once instead of blocking. Apply this one by hand:"
+      warn "$rebuild_hint"
+      ;;
+  esac
   notify "dotfiles rebuild failed" "./run.sh rebuild failed for ${head_commit:0:12}. See ~/.local/state/dotfiles-auto/apply.log."
   exit 1
 fi
