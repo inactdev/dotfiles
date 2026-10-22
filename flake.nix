@@ -190,7 +190,10 @@
       # modules/core.nix + modules/fabrica.nix + modules/inspector.nix +
       # modules/linux.nix, deliberately: the two modules under test, the
       # one they share their PATH ordering with, and the other Linux-only
-      # module a home-linux activation would carry. No modules/desktop.nix
+      # module a home-linux activation would carry - which now contributes
+      # an activation step of its own (enabling linger for the user whose
+      # systemd timer applies the dotfiles), asserted by the same
+      # rehearsal. No modules/desktop.nix
       # and nothing Darwin-only or secret-dependent, so the activation
       # needs no credentials, no fonts, and no git identity. One
       # consequence worth knowing: modules/linux.nix's systemd user unit
