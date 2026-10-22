@@ -78,13 +78,15 @@ echo "==> starting rehearsal container ($IMAGE, linux/amd64)"
 docker run -d --platform linux/amd64 --security-opt seccomp=unconfined --name "$CONTAINER" "$IMAGE" sleep infinity >/dev/null
 
 # gcc is for the $CI_USER section at the tail of this script, not for
-# either posture: modules/inspector.nix's activation step runs `go
-# install`, and Go leaves CGO_ENABLED on by default, so a module that
-# touches cgo anywhere in its tree needs a C compiler. Every real host this
-# profile targets has one (clang from the Xcode command line tools on
-# macOS, gcc from apt on the home Ubuntu box) - a bare ubuntu:24.04 is the
-# only place that would not, and a rehearsal failing for a reason no real
-# machine has would be noise rather than a finding.
+# either posture, and it is now insurance rather than a requirement:
+# modules/inspector-sync.sh sets CGO_ENABLED=0, so its `go install` asks
+# for no C compiler - and an apt-installed one would be invisible to it
+# anyway, since that activation step runs on a PATH of store packages
+# only. It stays because a bare ubuntu:24.04 is the only host in this
+# picture with no compiler at all (macOS has clang from the Xcode command
+# line tools, the home Ubuntu box has gcc from apt), so any dependency
+# that falls back to building a native addon would fail here for a reason
+# no real machine has, which is noise rather than a finding.
 docker exec "$CONTAINER" bash -c '
   set -e
   apt-get update -y >/tmp/apt.log 2>&1

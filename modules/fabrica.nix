@@ -96,8 +96,24 @@ in
   #     argument, not an assignment. `env` is what actually applies it.
   #     install.container-test.sh activates this step for real on Linux so
   #     that a return to either shape fails CI instead of passing it.
+  #
+  # The same `env` names the shell npm runs lifecycle scripts with, by
+  # absolute store path. npm does not run `prepare`/`postinstall` scripts
+  # itself - it hands them to a shell, and with `script-shell` left at its
+  # default it spawns the bare name `sh` and lets PATH resolve it. A global
+  # install from a git spec runs at least two of those scripts (Fabrica's
+  # own `prepare`, esbuild's `postinstall`), so wherever that lookup comes
+  # up empty the install fails with `npm error enoent spawn sh ENOENT`
+  # after everything else about the step worked. Setting `script-shell`
+  # (npm reads any `npm_config_<key>` out of the environment, underscores
+  # standing in for dashes) hands npm a path where it would otherwise use a
+  # name, which removes the lookup instead of feeding it: a string is used
+  # verbatim as the shell, and only the default `true` turns into `sh`.
   home.activation.installFabrica = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    run ${pkgs.coreutils}/bin/env PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
+    run ${pkgs.coreutils}/bin/env \
+      PATH="${syncPath}:$PATH" \
+      npm_config_script_shell=${pkgs.bash}/bin/bash \
+      ${pkgs.bash}/bin/bash \
       ${fabricaSync} ${lib.escapeShellArg npmPrefix} ${managedBinGuard} \
       || echo "fabrica-sync exited non-zero; continuing activation." >&2
   '';

@@ -169,9 +169,20 @@ sync_to_remote_tip() {
   # is still checksum-verified. GIT_TERMINAL_PROMPT=0 for the same reason as
   # above: go fetches with git, and a credential prompt must never be able
   # to block a switch.
+  #
+  # CGO_ENABLED=0 because Inspector is pure Go and this step must not need
+  # a C compiler. Go leaves cgo on by default, and a build that reaches any
+  # cgo-using file then stops with `cgo: C compiler gcc not found` - which
+  # is what happens under activation even on a host that has a compiler
+  # installed, because modules/inspector.nix gives the step a PATH of just
+  # the store packages it lists and a C toolchain is not one of them.
+  # Inspector's own repository documents running its suite with cgo off for
+  # the same reason (it needs no C compiler that way), so turning it off
+  # here costs nothing and makes the install work the same on every host.
   if ! GOBIN=$gobin \
     GOPRIVATE='github.com/inactdev/*' \
     GIT_TERMINAL_PROMPT=0 \
+    CGO_ENABLED=0 \
     go install "$pkg_path@$remote_commit"; then
     warn "go install $pkg_path@$remote_commit failed, so Inspector was not updated."
     warn "re-run the switch once the cause is cleared."

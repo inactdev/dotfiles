@@ -90,11 +90,12 @@ Four things about that rehearsal that are decisions, not incidentals:
 
 Two sharp edges in the container for anyone extending this:
 
-- `gcc` is now in the harness's apt list. Go leaves `CGO_ENABLED` on, and
-  a bare `ubuntu:24.04` is the only host in this picture with no C
-  compiler - macOS has clang from the Xcode command line tools, the home
-  Ubuntu box has gcc from apt. Without it a `go install` failure would be
-  a container artifact masquerading as a finding.
+- `gcc` is in the harness's apt list as insurance, not as a requirement.
+  The `go install` now runs with `CGO_ENABLED=0` (see below), and an
+  apt-installed compiler would be invisible to that step anyway, because
+  an activation step only sees the store packages its module puts on PATH.
+  It stays so that a dependency falling back to building a native addon
+  cannot fail for a container-only reason.
 - `modules/linux.nix` without `modules/desktop.nix` writes a systemd user
   unit whose `ExecStart` (`~/.local/bin/dotfiles-auto-apply`) has no file
   behind it, because `desktop.nix` is what symlinks that. Harmless here:
@@ -124,6 +125,35 @@ another one:
   copying a neighbouring single-line attrset is only safe when the thing
   being copied is also a lone `inherit`. Worth knowing because
   `nixfmt --check` runs in CI and the formatter is not on every machine.
+
+**What the rehearsal found once the steps actually ran.** Both failures
+were the same kind of thing: an activation step's PATH is only the store
+packages its own module lists, and a tool that looks something up by name
+finds nothing there.
+
+- **npm runs lifecycle scripts through a shell it resolves by name.** With
+  `script-shell` at its default, npm spawns the bare name `sh`
+  (`@npmcli/promise-spawn` substitutes `sh` for `shell: true` on POSIX and
+  uses a string as given), so every script an install has to run is one
+  PATH lookup away from `npm error enoent spawn sh ENOENT` - and a global
+  install from a git spec runs at least two of them, the package's own
+  `prepare` and esbuild's `postinstall`. The fix that does not depend on
+  that lookup is to name the shell by absolute path:
+  `npm_config_script_shell=${pkgs.bash}/bin/bash` on the `env` the step
+  already had. npm takes any config from the environment as
+  `npm_config_<key>` with underscores standing in for dashes, and pacote
+  passes the same value through to the `prepare` it runs for a git
+  dependency, so one setting covers both layers. Note what is *not* the
+  fix: adding `pkgs.bash` to the module's PATH list. It was already there,
+  and bash's own package does ship a `bin/sh` symlink next to `bin/bash` in
+  this nixpkgs - so that PATH entry provides the name and the lookup is
+  still the wrong thing to rely on.
+- **`go` leaves cgo on, and no C compiler is in the store PATH either.**
+  `go install` stopped with `cgo: C compiler gcc not found` on a container
+  that had gcc installed, because the step cannot see it. Inspector is pure
+  Go, so `modules/inspector-sync.sh` now sets `CGO_ENABLED=0` on the
+  install - the compiler is not needed on any host, and the step stops
+  depending on one being present and visible.
 
 **Same shape elsewhere.** `modules/desktop.nix`'s `installNerdFont` and
 `modules/linux.nix`'s `startDotfilesAutoApplyTimer` still use
