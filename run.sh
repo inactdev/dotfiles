@@ -266,6 +266,7 @@ cmd_bootstrap_nix() {
     sudo "$nix_bin" run github:nix-darwin/nix-darwin/nix-darwin-26.05#darwin-rebuild -- \
       switch --flake ~/.dotfiles#"$host"
   fi
+  record_applied_commit
   check_gh_auth
   echo "==> Done. Day-to-day command from now on: ./run.sh rebuild"
 }
@@ -346,7 +347,33 @@ cmd_rebuild() {
   else
     sudo darwin-rebuild switch --flake ~/.dotfiles#"$HOST"
   fi
+  record_applied_commit
   check_gh_auth
+}
+
+# Records the commit this machine has just been switched to, where the
+# self-apply job (home/.local/bin/dotfiles-auto-apply) looks for it - the
+# same ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-auto/last-applied
+# that job writes itself after a rebuild of its own. On personal-mac that
+# job deliberately never switches anything (it has no terminal for sudo to
+# prompt at, so it notifies instead), which makes a hand-run rebuild the
+# only thing that can tell it the machine has caught up - without this, its
+# "an update is ready" reminder would keep being logged after you had
+# already applied the update. Best-effort in every direction: a commit it
+# could not read or a state file it could not write is never worth failing
+# a switch that already succeeded, and it is only ever called after one.
+record_applied_commit() {
+  local state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles-auto"
+  local commit
+  commit="$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" || commit=""
+  if [ -z "$commit" ]; then
+    return 0
+  fi
+  if ! mkdir -p "$state_dir" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\n' "$commit" > "$state_dir/last-applied" 2>/dev/null || true
+  return 0
 }
 
 check_gh_auth() {
