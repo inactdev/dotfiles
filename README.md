@@ -272,12 +272,31 @@ Where to look when you want to know what it did:
   `last-blocked` (the last thing it couldn't act on, so it only tells you
   once). Deleting any of them costs you at most one repeated notification.
 
-One thing it needs from the machine itself, which Nix can't declare:
+The one thing a headless Linux box needs from the machine itself - linger -
+is part of the switch, not a step to remember:
 
-- **On a headless Linux box, `loginctl enable-linger <user>` once, as
-  root.** A systemd *user* timer only runs while that user's systemd
-  instance is up; with linger it comes up at boot, without it only while
-  someone is logged in.
+- **A systemd *user* timer only runs while that user's systemd instance is
+  up.** With linger that instance comes up at boot; without it, only while
+  someone is logged in - so an unattended cloud box would stop applying
+  anything the moment the last ssh session closed, and say nothing about
+  it. Every `home-linux` switch therefore enables linger itself
+  (`modules/linux.nix`), so `./run.sh bootstrap home-linux` really is all a
+  new box needs.
+- **It needs no root and no password.** logind lets an account turn linger
+  on for itself, and the account is the username this host is configured
+  with - so a switch run through `sudo` still targets the human account,
+  never `root`. The call carries `--no-ask-password`, so a machine whose
+  policy would demand one fails in milliseconds instead of blocking a
+  scheduled run with no terminal, and a user who already has linger is a
+  no-op rather than a fresh authorization request every half hour.
+- **It is never silently skipped.** A machine that cannot have logind at
+  all (systemd isn't the init system, or there is no `loginctl`) has no
+  systemd user manager for the timer either; that one prints a warning
+  naming the command it skipped and why, and the switch carries on.
+  Anything else - logind there, linger off, and the call refused - fails
+  the switch and tells you the one command to run as root
+  (`sudo loginctl enable-linger <user>`), because a timer that only fires
+  while you happen to be logged in is exactly the state nobody notices.
 
 There is deliberately nothing to set up on the Mac - no `/etc/sudoers.d`
 rule, no root `launchd.daemons` job. Both were the obvious ways to let the
@@ -407,7 +426,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
-- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
+- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix` and `modules/linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 

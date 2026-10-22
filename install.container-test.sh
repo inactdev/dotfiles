@@ -19,8 +19,10 @@
 # run a real `home-manager switch` of flake.nix's
 # homeConfigurations."ci-linux", as a separate throwaway user with a
 # scratch HOME. That is the only check anywhere in this repo that actually
-# executes modules/fabrica.nix's and modules/inspector.nix's activation
-# steps - see the comment block above it for why nothing cheaper can.
+# executes the activation steps in modules/fabrica.nix,
+# modules/inspector.nix and modules/linux.nix (the two sync steps, and the
+# one that enables linger for the user whose timer applies the dotfiles) -
+# see the comment block above it for why nothing cheaper can.
 #
 # Requires Docker. Usage: bash install.container-test.sh
 set -uo pipefail
@@ -583,6 +585,60 @@ assert "ci-linux: a fresh login shell resolves inspector to the managed copy" \
   login_shell_runs_managed inspector
 assert "ci-linux: a fresh login shell resolves fabrica to the managed copy" \
   login_shell_runs_managed fabrica
+
+# --- the linger step (modules/linux.nix) ------------------------------------
+# The other thing only a real activation can check: modules/linux.nix now
+# enables linger for the configured user, because the systemd *user* timer
+# it declares only runs while that user's systemd instance is up - without
+# linger, a headless box stops applying its dotfiles the moment the last
+# session ends, silently.
+#
+# What this asserts depends on the container, by design, and the condition
+# is the module's own definition of "logind cannot exist here" (no
+# loginctl, or systemd is not the init system) so the two cannot disagree:
+#
+#   - no logind (today's ubuntu:24.04 container, where PID 1 is `sleep`):
+#     the step must say out loud that it skipped, naming the command and
+#     the user. A silent skip is the failure this whole section exists to
+#     catch - the switch exiting 0 proves nothing on its own, exactly as
+#     with the two sync steps above.
+#   - logind present (a container that ever gains systemd, or this file
+#     reused against a real box): the step must have actually enabled it,
+#     and logind itself - not the log - is what gets asked.
+container_has_logind() {
+  docker exec "$CONTAINER" bash -c '[ -d /run/systemd/system ] && command -v loginctl >/dev/null 2>&1'
+}
+
+linger_step_warned_it_skipped() {
+  grep -q "skipped 'loginctl enable-linger $CI_USER'" "$CI_HOST_LOG"
+}
+
+# Either wording is a pass: a fresh user is enabled, and a re-run of the
+# switch finds it already on. Both are the step reporting linger is on.
+linger_step_reported_linger_on() {
+  grep -qE "(enabled linger for|linger already enabled for) $CI_USER" "$CI_HOST_LOG"
+}
+
+logind_reports_linger_enabled() {
+  local linger
+  linger="$(docker exec "$CONTAINER" \
+    loginctl show-user "$CI_USER" --property=Linger --value 2>/dev/null)"
+  if [ "$linger" = "yes" ]; then
+    return 0
+  fi
+  echo "  logind reports Linger=${linger:-<no answer>} for $CI_USER" >&2
+  return 1
+}
+
+if container_has_logind; then
+  assert "ci-linux: the linger step reported linger on for $CI_USER" \
+    linger_step_reported_linger_on
+  assert "ci-linux: logind reports Linger=yes for $CI_USER after the switch" \
+    logind_reports_linger_enabled
+else
+  assert "ci-linux: the linger step warned it skipped, naming the command and the user" \
+    linger_step_warned_it_skipped
+fi
 
 echo ""
 echo "$pass_count passed, $fail_count failed"

@@ -7,8 +7,11 @@ name: install.sh container rehearsal
 # emulation). See AGENTS.md and install.container-test.sh.
 #
 # Despite the name, this job is also the only place that runs a real
-# home-manager activation of modules/fabrica.nix's and
-# modules/inspector.nix's activation steps - the tail of
+# home-manager activation of the activation steps in modules/fabrica.nix,
+# modules/inspector.nix and modules/linux.nix (the two sync steps, and the
+# one that enables linger for the user whose timer applies the dotfiles,
+# which this container has no logind for and must therefore see skip out
+# loud rather than silently) - the tail of
 # install.container-test.sh switches flake.nix's
 # homeConfigurations."ci-linux" in the same container, as its own
 # throwaway user. The path filter below already covers it (modules/**,
