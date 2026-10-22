@@ -118,7 +118,12 @@
       # (Darwin-only: herdr, and the launchd half of the self-apply job)
       # plus modules/linux.nix (Linux-only: the systemd user timer that is
       # the other half of it).
-      # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- switch --flake .#home-linux
+      # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- -b hm-backup switch --flake .#home-linux
+      # (`./run.sh rebuild` runs exactly that. -b has no declarative
+      # equivalent here - backupFileExtension, as set for personal-mac
+      # above, is a NixOS/nix-darwin module option and does not exist for a
+      # standalone homeConfigurations output - and it must come before
+      # `switch`, which silently ignores it otherwise.)
       homeConfigurations."home-linux" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
           system = "x86_64-linux";

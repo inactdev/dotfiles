@@ -101,12 +101,13 @@ in
   # One consequence on a machine that has never been switched: those three
   # files become files home-manager owns, and it stops rather than
   # overwrite an existing regular file at any of them unless the switch is
-  # given a backup extension. install.sh passes one (`-b hm-backup`) and
-  # personal-mac's nix-darwin configuration sets one; `./run.sh`'s
-  # home-linux switch passes none, so a box with its distribution's own
-  # ~/.bashrc or ~/.profile still in place needs those moved aside once by
-  # hand, or the switch given `-b`, before the first apply after this
-  # lands.
+  # given a backup extension. Every switch in this repo now gives one -
+  # `-b hm-backup` from install.sh and from run.sh's home-linux branch,
+  # `home-manager.backupFileExtension` from personal-mac's nix-darwin
+  # configuration - so a box arriving with its distribution's own
+  # ~/.bashrc or ~/.profile gets them backed up as `.hm-backup` on the
+  # first apply rather than failing it. Applying this configuration by
+  # some other hand-written home-manager command still needs `-b`.
   programs.bash.enable = true;
 
   programs.zsh = {

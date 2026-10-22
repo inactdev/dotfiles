@@ -259,8 +259,11 @@ cmd_bootstrap_nix() {
   nix_bin="$(command -v nix)"
   if [ "$host" = "home-linux" ]; then
     echo "==> 4/4 first build + apply (10-20 min of downloads)"
+    # -b hm-backup: see the comment on the same flag in cmd_rebuild below.
+    # It matters most here - a first bootstrap is precisely when the box
+    # still has its distribution's own ~/.bashrc and ~/.profile in place.
     "$nix_bin" run github:nix-community/home-manager/release-26.05#home-manager -- \
-      switch --flake ~/.dotfiles#"$host"
+      -b hm-backup switch --flake ~/.dotfiles#"$host"
   else
     echo "==> 4/4 first build + apply (10-20 min of downloads; will ask for sudo)"
     sudo "$nix_bin" run github:nix-darwin/nix-darwin/nix-darwin-26.05#darwin-rebuild -- \
@@ -342,8 +345,22 @@ cmd_rebuild() {
   fi
   link_dotfiles "$DIR" "$relink"
   if [ "$HOST" = "home-linux" ]; then
+    # -b hm-backup is the standalone-CLI equivalent of the
+    # home-manager.backupFileExtension personal-mac gets declaratively in
+    # flake.nix (that option only exists in the NixOS/nix-darwin modules,
+    # never for a homeConfigurations output) - without it, one unmanaged
+    # regular file where a managed one goes aborts the entire activation
+    # instead of being moved aside. On a stock Ubuntu box that is the norm,
+    # not an edge case: /etc/skel seeds ~/.bashrc and ~/.profile, both of
+    # which modules/core.nix's programs.bash.enable makes home-manager own.
+    #
+    # It MUST precede `switch`: -b is a top-level option, not one `switch`
+    # itself accepts, and `switch --flake ... -b hm-backup` drops it
+    # silently rather than erroring. Same ordering as install.sh's
+    # codespace switch and install.container-test.sh's ci-linux rehearsal,
+    # which is where this is exercised against a real activation.
     nix run github:nix-community/home-manager/release-26.05#home-manager -- \
-      switch --flake ~/.dotfiles#"$HOST"
+      -b hm-backup switch --flake ~/.dotfiles#"$HOST"
   else
     sudo darwin-rebuild switch --flake ~/.dotfiles#"$HOST"
   fi
