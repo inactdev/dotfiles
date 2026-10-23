@@ -51,9 +51,10 @@ in
 # hand. See modules/fabrica-sync.sh for what the activation step does and
 # every way it declines to do it; the short version is that it compares
 # the installed copy's commit against origin/master and only installs
-# (`npm pack` of the git spec, then `npm install -g` of that tarball -
-# the script's own comments say why it is two steps) when they differ, so
-# the cost of an ordinary switch is one `git ls-remote`.
+# (a `git clone` of its own, `npm pack` inside that clone, then
+# `npm install -g` of the tarball - the script's own comments say why it
+# is three steps and why no shorter form works) when they differ, so the
+# cost of an ordinary switch is one `git ls-remote`.
 #
 # `fabrica update` stays the day-to-day way to move Fabrica forward. This
 # step is the floor under it, not a replacement for it: it guarantees that

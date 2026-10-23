@@ -99,14 +99,21 @@ installed), and installs only when the two differ. Matching commits cost
 one network read and change nothing; a machine with no Fabrica on it at
 all gets one installed.
 
-The install itself is `npm pack github:inactdev/fabrica` followed by
-`npm install -g` of the tarball that produced, rather than one
-`npm install -g github:inactdev/fabrica`. The one-step form cannot work:
-npm installs a git spec globally by symlinking the prefix at its own
-temporary clone and then deleting the clone, so Fabrica's build step is
-left running in a directory that no longer exists. Packing first runs
-that build step where it is safe to, and the tarball installs like any
-other package.
+The install itself is a `git clone --depth 1` of `master` into a
+temporary directory, `npm pack` inside that clone, and `npm install -g`
+of the tarball that produced - never `npm install -g
+github:inactdev/fabrica`, and never `npm pack` of that spec either.
+Neither shorter form works. The one-step install is broken by npm for
+everyone: it installs a git spec globally by symlinking the prefix at its
+own temporary clone and then deleting the clone, so Fabrica's build step
+is left running in a directory that no longer exists. Packing the
+`github:` spec instead fails more quietly: for a `github:` spec npm
+fetches GitHub's tarball of the tree rather than cloning, so there is no
+`.git` for Fabrica's build step to read its commit out of - the install
+succeeds, `build-info.json` lands saying `{"commit":null}`, and the only
+symptom is `fabrica doctor` refusing to work afterwards. Cloning first
+gives that build step a real repository to read, and the tarball installs
+like any other package.
 
 Two details worth knowing:
 
@@ -190,6 +197,16 @@ login shell what `command -v <tool>` answers, and:
 - if the managed copy is not installed at all (a failed or skipped
   install), nothing is moved: the stale copy may be the only one on the
   machine.
+- a leftover `npm link` symlink at `~/.local/lib/node_modules/<tool>` is
+  **removed**, which is the one thing here that is deleted rather than
+  moved: the link holds no content, one `npm link` puts it back, and the
+  checkout on the far end of it is never touched. It has to go because
+  while it stands, npm reads `~/.local` as having the tool installed,
+  `npm install -g` into that prefix fails with `ENOTDIR`, and
+  `fabrica doctor` fails on a machine whose managed copy is perfectly
+  fine. Only a symlink, and only one pointing at a git checkout of that
+  tool, is removed - a real directory there, or a link to anything else,
+  gets a warning naming it and stays put.
 
 Like everything else in these two steps it never fails a switch - every
 outcome is a message and an exit 0. `fabrica doctor` is the hard stop that
@@ -431,7 +448,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
-- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix` and `modules/linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
+- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix` and `modules/linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
