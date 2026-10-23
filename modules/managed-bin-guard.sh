@@ -14,7 +14,9 @@
 # is exactly the machine nobody is watching. Putting the two managed bin
 # directories ahead of ~/.local/bin on PATH (modules/core.nix) is the fix
 # for the ordering; this is the check that the fix held, plus the cleanup
-# for the copies that caused the problem in the first place.
+# for the copies that caused the problem in the first place - including
+# the one that is not a binary, a leftover `npm link` symlink in the
+# user-writable npm prefix (mbg_remove_stale_npm_link).
 #
 # Four rules it never breaks:
 #
@@ -27,7 +29,10 @@
 #   - it moves aside, never deletes. A shadowing copy under $HOME goes to
 #     $XDG_CACHE_HOME/dotfiles-shadowed/<timestamp>/<path relative to
 #     $HOME>, and both paths are printed, so a copy moved by mistake is
-#     one `mv` from being back.
+#     one `mv` from being back. The single exception is a leftover
+#     `npm link` symlink, which is removed rather than moved because it
+#     holds no content at all - see mbg_remove_stale_npm_link, which also
+#     says what it removed and never touches the checkout on the far end.
 #   - it never moves anything that resolves into /nix/store. Such a copy
 #     is declaratively installed (a nix profile's own bin directory lives
 #     under $HOME), so moving it would corrupt a profile and the next
@@ -76,6 +81,19 @@ MBG_BASE_PATH=${MBG_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 # prove that rule against a scratch directory instead of needing a real
 # store path to point at.
 MBG_STORE_PREFIX=${MBG_STORE_PREFIX:-/nix/store}
+
+# The npm prefix whose global package directory is checked for a leftover
+# `npm link` (see mbg_remove_stale_npm_link). ~/.local because that is
+# where such a leftover has actually been found, and because it is the
+# user-writable prefix this project reaches for whenever npm's own default
+# is not writable - `work/codespace-bootstrap.sh` installs its npm tools
+# with `--prefix "$HOME/.local"` for exactly that reason, and an
+# `npm link` or `npm install -g` aimed at that prefix puts its package
+# entry under it. One path, not a list: it must stay a single word,
+# because a home directory with a space in it is a path, not two. If
+# another prefix ever needs covering, the function below takes the full
+# path, so a second call is the whole change.
+MBG_NPM_PREFIX=${MBG_NPM_PREFIX:-$HOME/.local}
 
 # Resolve a path to its canonical one without realpath or `readlink -f`:
 # neither is portable (`readlink -f` only reached BSD/macOS recently), and
@@ -197,6 +215,98 @@ mbg_quarantine() {
   return 0
 }
 
+# A git checkout of the named npm package, as far as anything here is
+# willing to claim: a directory with a repository in it (`.git` is a
+# directory in a clone but a file in a worktree, hence -e rather than -d)
+# whose package.json declares that name.
+#
+# Read with the shell's own pattern matching rather than with grep, jq or
+# node, because the only commands this file may rely on are the ones its
+# callers put on the activation PATH from the Nix store - and that is
+# coreutils, which has no grep in it, plus a language runtime (node for
+# Fabrica, go for Inspector) that is not the same one on both sides. The
+# match needs `"name"` and the quoted name on one line, which holds for a
+# formatted package.json and for a minified one alike.
+mbg_is_checkout_of() {
+  local dir=$1 name=$2
+  local line
+  [ -e "$dir/.git" ] || return 1
+  [ -f "$dir/package.json" ] || return 1
+  # `|| [ -n "$line" ]` so a final line with no newline is still read.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      *'"name"'*'"'"$name"'"'*) return 0 ;;
+    esac
+  done <"$dir/package.json"
+  return 1
+}
+
+# Remove the one leftover the scan above cannot see: the global package
+# symlink `npm link` writes at <prefix>/lib/node_modules/<tool>.
+#
+# It needs removing even after the bin shim beside it has been
+# quarantined. While a symlink stands where a package directory belongs,
+# npm keeps reading that prefix as having the tool installed, an
+# `npm install -g` into it fails with ENOTDIR, and `fabrica doctor` fails
+# outright and prints `npm unlink -g fabrica` as the fix - on a machine
+# whose managed install is perfectly fine, which is exactly the kind of
+# wrong answer this file exists to end.
+#
+# Removed rather than moved aside - the one exception to the header's
+# second rule - because there is nothing in it to lose: the link holds no
+# content, one `npm link` puts it back, and the checkout it points at,
+# where all the actual work lives, is never touched. The conditions are
+# correspondingly strict, and anything that fails one of them is warned
+# about and left exactly where it is:
+#
+#   - it must be a symlink. A real directory there is an install, not a
+#     link, and removing an install is not this function's business.
+#   - its target must still exist and must look like a git checkout of
+#     this tool (mbg_is_checkout_of above). A link to anything else is not
+#     something this can claim to recognise.
+#   - it must be under $HOME, like everything else this file may touch.
+#
+# Called after the bin scan, deliberately: removing the package link first
+# would turn a shim that resolves through it into a dangling symlink, and
+# a dangling symlink fails the scan's own `[ -f ] && [ -x ]` test - so it
+# would survive, unmoved and unrunnable, in front of the managed copy.
+mbg_remove_stale_npm_link() {
+  local tool=$1 link=$2
+  local target
+
+  [ -L "$link" ] || [ -e "$link" ] || return 0
+
+  case $link in
+    "$HOME"/*) ;;
+    *)
+      warn "a global package entry for $tool sits outside your home directory, at $link."
+      warn "left alone - nothing here owns that path."
+      return 0
+      ;;
+  esac
+
+  if [ ! -L "$link" ]; then
+    warn "$link is a real directory, not an \`npm link\` symlink, so it was left alone."
+    warn "another install of $tool lives there; remove it by hand if it is not wanted."
+    return 0
+  fi
+
+  target=$(mbg_resolve "$link")
+  if ! mbg_is_checkout_of "$target" "$tool"; then
+    warn "$link is an \`npm link\` symlink to $target, which is not a git checkout of $tool."
+    warn "left alone - only a link to a checkout reads as a leftover here; remove it by hand if it is one."
+    return 0
+  fi
+
+  if ! rm -f "$link"; then
+    warn "a leftover \`npm link\` symlink at $link could not be removed - remove it by hand."
+    return 0
+  fi
+  say "removed a leftover \`npm link\` symlink for $tool: $link -> $target"
+  say "the checkout itself was left alone; \`npm link\` in it puts the link back if it was wanted."
+  return 0
+}
+
 # Report what one login shell resolves the tool to. Prints the shell's
 # name on stdout when it is the managed copy (the caller collects those
 # into one line) and nothing but warnings otherwise.
@@ -305,6 +415,11 @@ guard_managed_binary() {
         ;;
     esac
   done <<<"$(mbg_candidate_dirs "$login_paths")"
+
+  # And the copy that is not a binary at all: a leftover `npm link` in the
+  # user-writable npm prefix. After the scan above, never before it (see
+  # the function's own comment for why the order is load-bearing).
+  mbg_remove_stale_npm_link "$tool" "$MBG_NPM_PREFIX/lib/node_modules/$tool"
 
   # Verify. A probe from before the cleanup is stale the moment anything
   # moved, so the shells get asked again in that case - and only in that

@@ -40,7 +40,6 @@ prefix=${1:?usage: fabrica-sync <npm-prefix> [guard-library]}
 guard_lib=${2:-$(dirname "$0")/managed-bin-guard.sh}
 
 repo_url=https://github.com/inactdev/fabrica.git
-npm_spec=github:inactdev/fabrica
 branch=master
 
 pkg_dir=$prefix/lib/node_modules/fabrica
@@ -122,9 +121,9 @@ installed_commit() {
   fi
 }
 
-# Install the remote tip into $prefix, in two steps and never straight
-# from the git spec. Exit status says whether it worked; the caller owns
-# the directory passed in and deletes it either way.
+# Install the remote tip into $prefix, in three steps: clone, pack the
+# clone, install the tarball. Exit status says whether it worked; the
+# caller owns the directory passed in and deletes it either way.
 #
 # `npm install -g <git spec>` cannot do this job, and not for any reason
 # to do with this script's environment: npm clones the spec into a
@@ -136,27 +135,56 @@ installed_commit() {
 # install dies with, and `--ignore-scripts` only trades it for a dangling
 # symlink to a deleted git-clone directory with no node_modules under it.
 #
-# `npm pack <git spec>` takes the same clone through the same `prepare` -
-# which is what writes the build-info.json installed_commit reads back
-# later - and then writes the result as a tarball where
-# --pack-destination says, leaving nothing behind for an install to point
-# at. Installing that tarball is an ordinary install: real files under
-# the prefix, dependencies resolved, scripts run in a directory that
-# stays put.
+# `npm pack <git spec>` is not the answer either, which is what the clone
+# below is for. For a `github:owner/repo` spec npm does not clone at all:
+# it fetches GitHub's tarball of the tree (codeload), which carries no
+# `.git`. Fabrica's `prepare` is scripts/write-build-info.mjs, and all it
+# does is `git rev-parse HEAD` into build-info.json - so with no
+# repository there it writes `{"commit":null}`, the install lands with no
+# commit recorded anywhere, and `fabrica doctor` fails on the copy this
+# step just installed. Nothing errors on the way: pack succeeds, install
+# succeeds, and the only symptom is doctor refusing to start work.
+#
+# So the clone is this script's own: `git clone --depth 1 --branch
+# <branch>`, into a directory under the one the caller made, with the
+# same no-prompt and low-speed settings as the `ls-remote` above. `npm
+# pack` with no spec packs the package in the current directory (npm's
+# own documentation), running prepack/prepare/postpack there - `.git` is
+# present, so build-info.json gets the real commit - and writes the
+# tarball where --pack-destination says. Installing that tarball is an
+# ordinary install: real files under the prefix, dependencies resolved,
+# scripts run in a directory that stays put.
+#
+# One thing npm's git-dep path did for us that this does not: it
+# installed the package's dependencies *and* devDependencies in its clone
+# before running `prepare`. Fabrica's `prepare` is dependency-free plain
+# node on purpose, so packing a bare clone is enough; if it ever grows a
+# build that needs its node_modules, this function has to run an install
+# in the clone first.
 #
 # The tarball is found by globbing rather than by name: npm names it from
 # the packed package.json (<name>-<version>.tgz), which this script has
 # no other reason to know. The directory is this run's own and was just
 # created, so exactly one .tgz in it is the one that was just packed -
 # any other count means something happened that was not planned for, and
-# nothing is installed.
+# nothing is installed. The clone is a directory, so it never enters that
+# count.
 install_from_pack() {
   local tmpdir=$1
+  local clone_dir=$tmpdir/clone
   local candidate
   local -a tarballs=()
 
-  if ! npm pack "$npm_spec" --pack-destination "$tmpdir" >/dev/null; then
-    warn "npm pack $npm_spec failed."
+  if ! GIT_TERMINAL_PROMPT=0 git \
+    -c http.lowSpeedLimit=1000 \
+    -c http.lowSpeedTime=15 \
+    clone --quiet --depth 1 --branch "$branch" "$repo_url" "$clone_dir"; then
+    warn "could not clone $branch from $repo_url into $clone_dir."
+    return 1
+  fi
+
+  if ! (cd "$clone_dir" && npm pack --pack-destination "$tmpdir" >/dev/null); then
+    warn "npm pack of the clone at $clone_dir failed."
     return 1
   fi
 
@@ -181,7 +209,7 @@ install_from_pack() {
 # `exit 0` would skip the guard on exactly the quiet paths - already
 # current, no network - where a shadowing copy goes unnoticed longest.
 sync_to_remote_tip() {
-  local ls_remote remote_commit current_commit tmpdir
+  local ls_remote remote_commit current_commit installed_now tmpdir
 
   # Read the remote tip. GIT_TERMINAL_PROMPT=0 so a host without
   # credentials for a private repo fails instead of blocking a
@@ -211,12 +239,13 @@ sync_to_remote_tip() {
     return 0
   fi
 
-  say "installing $npm_spec into $prefix (have: ${current_commit:-none recorded}, $branch: $remote_commit)"
+  say "installing $repo_url into $prefix (have: ${current_commit:-none recorded}, $branch: $remote_commit)"
 
-  # The pack and the install both happen in a directory of this run's own,
-  # removed whichever way they go: a tarball left in $TMPDIR would be
-  # mistaken for nothing, but it is a full copy of Fabrica's source and
-  # there is no reason for it to outlive the install it was packed for.
+  # The clone, the pack and the install all happen in a directory of this
+  # run's own, removed whichever way they go: a clone and a tarball left
+  # in $TMPDIR would be mistaken for nothing, but between them they are
+  # two full copies of Fabrica's source and there is no reason for either
+  # to outlive the install it was made for.
   if ! tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fabrica-sync.XXXXXX"); then
     warn "could not make a temporary directory, so Fabrica was not updated to $remote_commit."
     return 0
@@ -228,6 +257,21 @@ sync_to_remote_tip() {
     return 0
   fi
   rm -rf "$tmpdir"
+
+  # Did the copy that just landed come out carrying its own commit? This
+  # is the one thing about the install that can go wrong quietly: when the
+  # packed tree has no `.git` in it, Fabrica's `prepare` writes
+  # `{"commit":null}`, every command above still exits 0, and the first
+  # sign of it is `fabrica doctor` refusing to work on a machine that was
+  # switched successfully an hour ago. installed_commit falls back to the
+  # record written below, which still holds the *previous* commit at this
+  # point, so a mismatch reads the same way as nothing at all - which is
+  # what it is.
+  installed_now=$(installed_commit)
+  if [ -z "$installed_now" ] || ! same_commit "$installed_now" "$remote_commit"; then
+    warn "installed $remote_commit, but the copy in $pkg_dir reports ${installed_now:-no commit of its own}."
+    warn "\`fabrica doctor\` reads that commit, so expect it to complain; see build-info.json there."
+  fi
 
   if ! (mkdir -p "$state_dir" && printf '%s\n' "$remote_commit" >"$state_file"); then
     warn "installed $remote_commit but could not record it in $state_file;"
