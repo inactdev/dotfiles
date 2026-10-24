@@ -103,6 +103,7 @@
               ./modules/core.nix
               ./modules/desktop.nix
               ./modules/fabrica.nix
+              ./modules/inkwell.nix
               ./modules/inspector.nix
               ./modules/mac.nix
             ];
@@ -115,9 +116,11 @@
       # home-manager configuration (not a darwinSystem) composed from the
       # same modules/core.nix + modules/desktop.nix + modules/fabrica.nix +
       # modules/inspector.nix as personal-mac, minus modules/mac.nix
-      # (Darwin-only: herdr, and the launchd half of the self-apply job)
-      # plus modules/linux.nix (Linux-only: the systemd user timer that is
-      # the other half of it).
+      # (Darwin-only: herdr, and the launchd half of the self-apply job) and
+      # minus modules/inkwell.nix (Darwin-only too: a launchd agent, and
+      # one machine's notes published to one tailnet address), plus
+      # modules/linux.nix (Linux-only: the systemd user timer that is the
+      # other half of the self-apply job).
       # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- -b hm-backup switch --flake .#home-linux
       # (`./run.sh rebuild` runs exactly that. -b has no declarative
       # equivalent here - backupFileExtension, as set for personal-mac
