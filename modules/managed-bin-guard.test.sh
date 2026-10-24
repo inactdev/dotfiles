@@ -6,6 +6,12 @@
 # (outside $HOME, or resolving into the Nix store) is warned about and left
 # exactly where it is.
 #
+# Plus the one cleanup that is not a binary: a leftover `npm link` symlink
+# at ~/.local/lib/node_modules/<tool>, which is removed only when it is a
+# symlink to a git checkout of that tool - never a real directory, never a
+# link to anything else, never while the managed copy is missing, and
+# never the checkout on the far end of it.
+#
 # Hermetic in every direction. Every test runs against a scratch $HOME
 # under mktemp -d, with the login shells themselves mocked: the guard
 # locates `bash`/`zsh` with `command -v`, so a stub on a hermetic PATH is
@@ -423,6 +429,138 @@ test_unmovable_shadow_warns_and_still_returns_zero() {
   teardown
 }
 
+# An `npm link` global package entry: the symlink npm writes at
+# <prefix>/lib/node_modules/<name>, pointing at the checkout it was run
+# in. `npm link` writes a *relative* link, so this does too - the guard
+# has to resolve it against the link's own directory, not the working one.
+# The `../../../` is exact for any checkout directly under $HOME: three
+# levels up from ~/.local/lib/node_modules is $HOME itself. Written out
+# rather than computed, since `realpath --relative-to` is GNU-only and
+# busybox's realpath silently treats the flag as another path to print.
+link_checkout() {
+  local name=$1 checkout=$2
+  mkdir -p "$checkout/.git" "$HOME/.local/lib/node_modules"
+  printf '{\n  "name": "%s",\n  "version": "0.0.0"\n}\n' "$name" >"$checkout/package.json"
+  ln -s "../../../${checkout#"$HOME"/}" "$HOME/.local/lib/node_modules/$name"
+}
+
+test_leftover_npm_link_to_a_checkout_is_removed() {
+  setup
+  make_tool "$HOME/.npm-global/bin/fabrica" managed
+  # The full shape a hand-run `npm link` leaves behind: the package link
+  # plus the bin shim that resolves through it. The shim is a shadow the
+  # scan already handles; the link is what used to survive and fail
+  # `fabrica doctor` on a machine whose managed install was fine.
+  link_checkout fabrica "$HOME/src/fabrica"
+  make_tool "$HOME/src/fabrica/bin.mjs" from-the-checkout
+  mkdir -p "$HOME/.local/bin"
+  ln -s "../lib/node_modules/fabrica/bin.mjs" "$HOME/.local/bin/fabrica"
+  mock_shell bash "$HOME/.local/bin:$HOME/.npm-global/bin"
+  mock_shell zsh "$HOME/.local/bin:$HOME/.npm-global/bin"
+
+  out=$(run_guard fabrica "$HOME/.npm-global/bin/fabrica" 2>"$TMP/err")
+  err=$(cat "$TMP/err")
+
+  assert_contains "guard still returns 0" "$out" "guard-rc=0"
+  assert_contains "says what it removed, and where it pointed" "$out" \
+    "removed a leftover \`npm link\` symlink for fabrica: $HOME/.local/lib/node_modules/fabrica -> $HOME/src/fabrica"
+  assert_absent "the link is gone" "$HOME/.local/lib/node_modules/fabrica"
+  assert_file "the checkout it pointed at is untouched" "$HOME/src/fabrica/package.json"
+  assert_file "and so is the file the shim ran" "$HOME/src/fabrica/bin.mjs"
+  assert_absent "the shim it fed was quarantined, not left dangling" "$HOME/.local/bin/fabrica"
+  assert_contains "both shells confirmed afterwards" "$out" "in: bash zsh."
+  assert_eq "nothing on stderr once both are dealt with" "" "$err"
+  teardown
+}
+
+test_real_directory_in_the_npm_prefix_is_never_removed() {
+  setup
+  make_tool "$HOME/.npm-global/bin/fabrica" managed
+  # A real install in ~/.local, not a link. Removing an install is not the
+  # guard's business, however stale it is.
+  mkdir -p "$HOME/.local/lib/node_modules/fabrica"
+  printf '{ "name": "fabrica" }\n' >"$HOME/.local/lib/node_modules/fabrica/package.json"
+  mock_both_shells_managed_first
+
+  out=$(run_guard fabrica "$HOME/.npm-global/bin/fabrica" 2>"$TMP/err")
+  err=$(cat "$TMP/err")
+
+  assert_contains "guard still returns 0" "$out" "guard-rc=0"
+  assert_contains "says it is a real directory" "$err" \
+    "$HOME/.local/lib/node_modules/fabrica is a real directory, not an \`npm link\` symlink"
+  assert_contains "says it was left alone" "$err" "left alone"
+  assert_file "the directory is still there, whole" \
+    "$HOME/.local/lib/node_modules/fabrica/package.json"
+  assert_not_contains "and nothing claims to have removed it" "$out" "removed a leftover"
+  teardown
+}
+
+test_npm_link_to_something_other_than_a_checkout_is_left_alone() {
+  setup
+  make_tool "$HOME/.npm-global/bin/fabrica" managed
+  # Three links the guard must not act on: one to a directory with no
+  # repository in it, one to a checkout of some other package, and one
+  # whose target is gone. Each is run on its own, since there is only one
+  # path to put them at.
+  mock_both_shells_managed_first
+  mkdir -p "$HOME/.local/lib/node_modules" "$HOME/not-a-checkout"
+  printf '{ "name": "fabrica" }\n' >"$HOME/not-a-checkout/package.json"
+  ln -s "$HOME/not-a-checkout" "$HOME/.local/lib/node_modules/fabrica"
+  err=$(run_guard fabrica "$HOME/.npm-global/bin/fabrica" 2>&1 >/dev/null)
+  assert_contains "a link to a directory with no .git is left alone" "$err" \
+    "which is not a git checkout of fabrica"
+  assert_file "and the link itself survives" "$HOME/.local/lib/node_modules/fabrica/package.json"
+
+  rm -f "$HOME/.local/lib/node_modules/fabrica"
+  link_checkout fabrica "$HOME/src/other"
+  printf '{ "name": "something-else" }\n' >"$HOME/src/other/package.json"
+  err=$(run_guard fabrica "$HOME/.npm-global/bin/fabrica" 2>&1 >/dev/null)
+  assert_contains "a checkout of another package is left alone" "$err" \
+    "which is not a git checkout of fabrica"
+  assert_file "and that link survives too" "$HOME/.local/lib/node_modules/fabrica/package.json"
+
+  rm -f "$HOME/.local/lib/node_modules/fabrica"
+  ln -s "$HOME/src/deleted-checkout" "$HOME/.local/lib/node_modules/fabrica"
+  err=$(run_guard fabrica "$HOME/.npm-global/bin/fabrica" 2>&1 >/dev/null)
+  assert_contains "a dangling link is left alone, not guessed at" "$err" \
+    "which is not a git checkout of fabrica"
+  assert_eq "and it is still there" "$HOME/src/deleted-checkout" \
+    "$(readlink "$HOME/.local/lib/node_modules/fabrica")"
+  teardown
+}
+
+test_leftover_npm_link_survives_when_the_managed_copy_is_missing() {
+  setup
+  # No managed install today, so the linked checkout may be the only
+  # Fabrica on the machine - the same rule as for a stale binary.
+  link_checkout fabrica "$HOME/src/fabrica"
+  mock_both_shells_managed_first
+
+  out=$(run_guard fabrica "$HOME/.npm-global/bin/fabrica" 2>"$TMP/err")
+  err=$(cat "$TMP/err")
+
+  assert_contains "guard still returns 0" "$out" "guard-rc=0"
+  assert_contains "says the managed copy is not installed" "$err" "is not installed"
+  assert_file "the link is still there" "$HOME/.local/lib/node_modules/fabrica/package.json"
+  assert_not_contains "nothing claims to have removed it" "$out" "removed a leftover"
+  teardown
+}
+
+test_no_npm_prefix_entry_at_all_is_silent() {
+  setup
+  # The inspector case, and the ordinary fabrica case: nothing at
+  # ~/.local/lib/node_modules/<tool>, so nothing is said about it.
+  make_tool "$HOME/go/bin/inspector" managed
+  mock_both_shells_managed_first
+
+  out=$(run_guard inspector "$HOME/go/bin/inspector" 2>"$TMP/err")
+  err=$(cat "$TMP/err")
+
+  assert_eq "says nothing on stderr" "" "$err"
+  assert_not_contains "and nothing about npm links on stdout" "$out" "npm link"
+  teardown
+}
+
 test_non_plain_tool_name_is_refused() {
   setup
   make_tool "$HOME/go/bin/inspector" managed
@@ -500,6 +638,11 @@ test_alias_in_front_of_the_managed_copy_is_warned_about
 test_missing_shell_is_reported_and_the_other_still_checked
 test_two_shadowing_copies_are_both_quarantined_without_colliding
 test_unmovable_shadow_warns_and_still_returns_zero
+test_leftover_npm_link_to_a_checkout_is_removed
+test_real_directory_in_the_npm_prefix_is_never_removed
+test_npm_link_to_something_other_than_a_checkout_is_left_alone
+test_leftover_npm_link_survives_when_the_managed_copy_is_missing
+test_no_npm_prefix_entry_at_all_is_silent
 test_non_plain_tool_name_is_refused
 test_inspector_sync_guards_even_when_it_installs_nothing
 test_fabrica_sync_guards_even_when_it_installs_nothing

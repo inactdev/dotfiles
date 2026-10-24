@@ -22,7 +22,12 @@
 # executes the activation steps in modules/fabrica.nix,
 # modules/inspector.nix and modules/linux.nix (the two sync steps, and the
 # one that enables linger for the user whose timer applies the dotfiles) -
-# see the comment block above it for why nothing cheaper can.
+# see the comment block above it for why nothing cheaper can. Two of the
+# things only that section can see: whether the Fabrica the step installs
+# carries the commit it was built from (Fabrica's `prepare` reads it out
+# of a real `.git`, so this is the only place the install's own clone is
+# proved to have one), and whether the shadowing guard cleared the
+# leftover `npm link` symlink seeded for it below.
 #
 # Requires Docker. Usage: bash install.container-test.sh
 set -uo pipefail
@@ -500,6 +505,33 @@ echo "==> activating homeConfigurations.ci-linux for real (scratch HOME, throwaw
 CI_SEEDED_ZSHRC="pre-existing zshrc that home-manager must back up, not trip over"
 docker exec -u "$CI_USER" -e HOME="$CI_HOME" -e SEEDED="$CI_SEEDED_ZSHRC" \
   "$CONTAINER" bash -c 'printf "%s\n" "$SEEDED" >"$HOME/.zshrc"'
+
+# The second thing seeded before the switch, and for the same reason: a
+# leftover `npm link` symlink of the kind a hand-run `npm link` in a
+# Fabrica checkout leaves behind. Nothing in an activation ever creates
+# one - the managed install writes to ~/.npm-global, and the leftover sits
+# in the user-writable prefix ~/.local that a hand-run npm reaches for -
+# so only a seed can rehearse the state, and it is a state worth
+# rehearsing: while that symlink stands
+# where a package directory belongs, npm reads ~/.local as having Fabrica
+# installed, `npm install -g` into that prefix fails with ENOTDIR, and
+# `fabrica doctor` fails outright on a machine whose managed copy is
+# perfectly fine.
+#
+# The target is a real git repository whose package.json names fabrica,
+# because modules/managed-bin-guard.sh removes the link only when it can
+# see both of those things, and the link is relative because that is what
+# npm itself writes.
+CI_SEEDED_LINK="$CI_HOME/.local/lib/node_modules/fabrica"
+CI_SEEDED_CHECKOUT="$CI_HOME/src/fabrica"
+docker exec -u "$CI_USER" -e HOME="$CI_HOME" "$CONTAINER" bash -c '
+  set -eu
+  mkdir -p "$HOME/src/fabrica" "$HOME/.local/lib/node_modules"
+  cd "$HOME/src/fabrica"
+  git init -q .
+  printf "{ \"name\": \"fabrica\", \"version\": \"0.0.0\" }\n" >package.json
+  ln -s ../../../src/fabrica "$HOME/.local/lib/node_modules/fabrica"
+'
 docker exec -u "$CI_USER" -e USER="$CI_USER" -e HOME="$CI_HOME" "$CONTAINER" bash -c '
   set -euo pipefail
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -621,6 +653,69 @@ fabrica_bin_resolves_into_the_managed_prefix() {
 }
 assert "ci-linux: ~/.npm-global/bin/fabrica resolves into the managed npm prefix" \
   fabrica_bin_resolves_into_the_managed_prefix
+
+# Right binary, and it knows what it is. build-info.json is the one file
+# Fabrica's `prepare` writes, and all it puts there is `git rev-parse
+# HEAD` of the tree being packed - which is why modules/fabrica-sync.sh
+# clones the repository itself instead of packing npm's
+# `github:inactdev/fabrica` spec: for a `github:` spec npm fetches
+# GitHub's tarball of the tree, which carries no `.git`, so `prepare`
+# writes `{"commit":null}` while every command in the install still exits
+# 0 and the first symptom is `fabrica doctor` refusing to work. Nothing
+# short of a real activation can see that, which is what this is.
+fabrica_build_info_carries_its_commit() {
+  local info
+  info="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    'cat "$HOME/.npm-global/lib/node_modules/fabrica/build-info.json" 2>/dev/null')"
+  if printf '%s' "$info" | grep -Eq '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{7,40}"'; then
+    return 0
+  fi
+  echo "  build-info.json says: ${info:-<missing>}" >&2
+  return 1
+}
+assert "ci-linux: the installed Fabrica records the commit it was built from" \
+  fabrica_build_info_carries_its_commit
+
+# The same thing from the step's own mouth: fabrica-sync re-reads the
+# commit out of the copy it just installed and warns when it finds none,
+# so this fails on the regression even if the file above is ever read a
+# different way.
+fabrica_sync_found_the_commit_it_installed() {
+  ! grep -q "reports no commit of its own" "$CI_HOST_LOG"
+}
+assert "ci-linux: fabrica-sync did not report an installed copy with no commit" \
+  fabrica_sync_found_the_commit_it_installed
+
+# The clone and the tarball it was packed into are two full copies of
+# Fabrica's source; the step makes them in a directory of its own and is
+# supposed to delete it whichever way the install goes.
+no_fabrica_sync_tempdir_left_behind() {
+  ! docker exec -u "$CI_USER" "$CONTAINER" bash -c 'ls -d /tmp/fabrica-sync.* >/dev/null 2>&1'
+}
+assert "ci-linux: the Fabrica step left no clone or tarball behind in /tmp" \
+  no_fabrica_sync_tempdir_left_behind
+
+# The leftover `npm link` seeded before the switch: removed, said so, and
+# the checkout on the far end of it untouched. A removal rather than a
+# move into the quarantine directory, because a symlink holds nothing to
+# keep - which is exactly why the checkout assertion matters as much as
+# the absence one.
+assert "ci-linux: the guard said which leftover npm link it removed" \
+  grep -q "symlink for fabrica: $CI_SEEDED_LINK -> $CI_SEEDED_CHECKOUT" "$CI_HOST_LOG"
+
+seeded_npm_link_is_gone() {
+  docker exec -u "$CI_USER" -e LINK="$CI_SEEDED_LINK" "$CONTAINER" bash -c \
+    '[ ! -e "$LINK" ] && [ ! -L "$LINK" ]'
+}
+assert "ci-linux: the leftover npm link symlink is gone from ~/.local" \
+  seeded_npm_link_is_gone
+
+seeded_checkout_was_not_touched() {
+  docker exec -u "$CI_USER" -e CHECKOUT="$CI_SEEDED_CHECKOUT" "$CONTAINER" bash -c \
+    '[ -f "$CHECKOUT/package.json" ] && [ -d "$CHECKOUT/.git" ]'
+}
+assert "ci-linux: the checkout that link pointed at is still whole" \
+  seeded_checkout_was_not_touched
 
 # Finally, the guarantee the two steps exist to provide, taken from the
 # steps' own output: modules/managed-bin-guard.sh asks a fresh login shell
