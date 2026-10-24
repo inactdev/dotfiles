@@ -212,6 +212,52 @@ Like everything else in these two steps it never fails a switch - every
 outcome is a message and an exit 0. `fabrica doctor` is the hard stop that
 refuses to start work when the wrong Inspector would win.
 
+### Inkwell's backend (`personal-mac` only)
+
+The local server the phone posts a captured note to - it writes each one
+into `~/inkwell-notes`, a git repository of markdown it creates and commits
+to itself - runs on the Mac as a launchd user agent, and there is nothing
+to start, nothing to leave a terminal tab open for, and nothing to redo
+after a reboot. `modules/inkwell.nix` is all three parts:
+
+- **It runs at login and comes back when it dies.** The agent
+  (`RunAtLoad` + `KeepAlive`) runs `~/go/bin/inkwell-backend --addr
+  127.0.0.1:8080 --storage-dir ~/inkwell-notes`, with both its streams in
+  `~/Library/Logs/inkwell-backend.log`. Loopback only, on purpose: the
+  phone comes in through tailscale (below), which proxies to `127.0.0.1` on
+  this same machine, and a note server with no authentication of its own
+  has no business on the LAN. The agent also gets an explicit `PATH`,
+  because the backend shells out to `git` for every write.
+- **The binary is kept current by the switch.** On every activation
+  `modules/inkwell-sync.sh` reads the tip of `main` from
+  `github.com/inactdev/inkwell` with `git ls-remote`, compares it against
+  the VCS revision stamped into the installed binary (`go version -m`
+  reads it back), and only when they differ builds that commit in a
+  throwaway shallow clone and moves the result into place - then restarts
+  the agent, because the plist deliberately never changes and so
+  home-manager has no reason to. A match costs one network read. Unlike
+  Inspector this *builds* rather than `go install`s, and not by choice:
+  inkwell's backend declares `module inkwell/backend`, and Go refuses a
+  module path with no dot in its first element for any remote install.
+  Reading and cloning a private `inkwell` needs this machine's GitHub
+  credentials, which `programs.gh`'s credential helper (`modules/core.nix`)
+  already supplies - and nothing here ever prompts for one. It never fails
+  a switch either: offline, no credentials, a failed build, a `launchctl`
+  that refuses - each warns and leaves what is installed and running alone.
+- **The phone's address is configured once.** The last step publishes
+  `127.0.0.1:8080` on this machine's tailnet address over HTTPS with
+  `tailscale serve --bg`, which tailscaled keeps across reboots by itself,
+  and only when serve is not already configured: a node already serving
+  this port is reported and left alone, and a node serving *something else*
+  is never overwritten - it says what it refused to do and the one command
+  to do it by hand. Every call runs under a `timeout`, because a tailnet
+  that has not enabled HTTPS certificates sends the CLI into a flow that
+  waits for a human in the admin console, and an activation has nobody to
+  ask.
+
+`~/go/bin/inkwell-backend` needs none of the shadowing guard below: launchd
+runs it by absolute path, and nothing resolves `inkwell-backend` by name.
+
 ### Applying itself
 
 `personal-mac` and `home-linux` keep themselves current without anyone
@@ -447,9 +493,11 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
+- `bash modules/inkwell-sync.test.sh` - the Inkwell backend's build and agent decisions: already-current costs no build, a stale/unstamped/dirty-tree binary is rebuilt, a rebuild restarts the agent while an unchanged one only gets started if it isn't running, an agent that isn't loaded is bootstrapped, and no network, no clone, no build or a refusing `launchctl` each warn and leave what is installed and running alone - against a mocked `git`/`go`/`launchctl` on a hermetic PATH, with `$HOME`, the Go bin directory and `$TMPDIR` all under one scratch directory. It never clones, compiles, or speaks to a real launchd.
+- `bash modules/inkwell-tailscale-serve.test.sh` - the serve step: an unconfigured node is published, a node already serving that port is left alone, a node serving something else is never overwritten, a port that merely starts with the same digits is not that port, and an unreachable daemon or a refused publish is a warning rather than a failed switch - against a mocked `tailscale` and a `timeout` wrapper that records the bound it was given. It never touches a real tailnet.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
 - `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix` and `modules/linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
-The five hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
+The seven hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.

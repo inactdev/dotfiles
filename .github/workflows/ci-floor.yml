@@ -32,17 +32,23 @@ jobs:
           shellcheck run.sh run.test.sh install.sh install.test.sh
           install.container-test.sh work/*.sh home/.local/bin/*
 
-  # run.test.sh, install.test.sh, work/codespace-bootstrap.test.sh and
-  # home/.local/bin/dotfiles-auto-apply.test.sh are pure bash logic tests
-  # (host selection, posture detection, the codespace-work apt/npm/binary
-  # install logic against mocked apt-get/curl/npm, the self-apply job
-  # against a mocked git/run.sh) with no macOS-only dependency - Ubuntu is
-  # cheaper and sufficient. All of them isolate HOME internally, but each
-  # step also sets a scratch HOME itself as defense in depth: run.sh once
-  # repointed ~/.dotfiles unconditionally (issue #9, since fixed by its
-  # link_dotfiles guard), so this job must never rely on the runner being
-  # disposable - a scratch HOME keeps the same workflow safe under `act`
-  # even if that guard ever regresses.
+  # run.test.sh, install.test.sh, work/codespace-bootstrap.test.sh,
+  # home/.local/bin/dotfiles-auto-apply.test.sh and the two
+  # modules/inkwell-*.test.sh suites are pure bash logic tests (host
+  # selection, posture detection, the codespace-work apt/npm/binary install
+  # logic against mocked apt-get/curl/npm, the self-apply job against a
+  # mocked git/run.sh, and the Inkwell backend's build/agent and
+  # tailscale-serve decisions against a mocked git/go/launchctl/tailscale)
+  # with no macOS-only dependency - Ubuntu is cheaper and sufficient. The
+  # two Inkwell suites test scripts that only ever run on personal-mac, and
+  # that is fine for the same reason: every macOS-only command they reach is
+  # one of the mocks, and running them anywhere a real launchd or a real
+  # tailnet could answer is precisely what they must not do. All of them
+  # isolate HOME internally, but each step also sets a scratch HOME itself
+  # as defense in depth: run.sh once repointed ~/.dotfiles unconditionally
+  # (issue #9, since fixed by its link_dotfiles guard), so this job must
+  # never rely on the runner being disposable - a scratch HOME keeps the
+  # same workflow safe under `act` even if that guard ever regresses.
   tests-ubuntu:
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +61,10 @@ jobs:
         run: HOME="$(mktemp -d)" bash work/codespace-bootstrap.test.sh
       - name: bash home/.local/bin/dotfiles-auto-apply.test.sh
         run: HOME="$(mktemp -d)" bash home/.local/bin/dotfiles-auto-apply.test.sh
+      - name: bash modules/inkwell-sync.test.sh
+        run: HOME="$(mktemp -d)" bash modules/inkwell-sync.test.sh
+      - name: bash modules/inkwell-tailscale-serve.test.sh
+        run: HOME="$(mktemp -d)" bash modules/inkwell-tailscale-serve.test.sh
 
   # work/bootstrap.sh only ever runs on the work Mac (see AGENTS.md), and
   # its `#!/bin/sh` shebang resolves to a genuinely different shell on
