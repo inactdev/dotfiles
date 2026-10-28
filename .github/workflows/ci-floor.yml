@@ -33,16 +33,18 @@ jobs:
           install.container-test.sh work/*.sh home/.local/bin/*
 
   # run.test.sh, install.test.sh, work/codespace-bootstrap.test.sh,
-  # home/.local/bin/dotfiles-auto-apply.test.sh and the two
+  # home/.local/bin/dotfiles-auto-apply.test.sh and the four
   # modules/inkwell-*.test.sh suites are pure bash logic tests (host
   # selection, posture detection, the codespace-work apt/npm/binary install
   # logic against mocked apt-get/curl/npm, the self-apply job against a
-  # mocked git/run.sh, and the Inkwell backend's build/agent and
-  # tailscale-serve decisions against a mocked git/go/launchctl/tailscale)
-  # with no macOS-only dependency - Ubuntu is cheaper and sufficient. The
-  # two Inkwell suites test scripts that only ever run on personal-mac, and
-  # that is fine for the same reason: every macOS-only command they reach is
-  # one of the mocks, and running them anywhere a real launchd or a real
+  # mocked git/run.sh, and the Inkwell backend's build, launchd-agent,
+  # systemd-service, key-file and tailscale-serve decisions against a mocked
+  # git/go/launchctl/systemctl/tailscale/stat) with no macOS-only
+  # dependency - Ubuntu is cheaper and sufficient. Two of the Inkwell suites
+  # test scripts that only ever run on personal-mac and two of them scripts
+  # that only ever run on home-linux, and both are fine for the same reason:
+  # every host-specific command they reach is one of the mocks, and running
+  # them anywhere a real launchd, a real systemd user manager or a real
   # tailnet could answer is precisely what they must not do. All of them
   # isolate HOME internally, but each step also sets a scratch HOME itself
   # as defense in depth: run.sh once repointed ~/.dotfiles unconditionally
@@ -65,6 +67,10 @@ jobs:
         run: HOME="$(mktemp -d)" bash modules/inkwell-sync.test.sh
       - name: bash modules/inkwell-tailscale-serve.test.sh
         run: HOME="$(mktemp -d)" bash modules/inkwell-tailscale-serve.test.sh
+      - name: bash modules/inkwell-key-file.test.sh
+        run: HOME="$(mktemp -d)" bash modules/inkwell-key-file.test.sh
+      - name: bash modules/inkwell-linux-sync.test.sh
+        run: HOME="$(mktemp -d)" bash modules/inkwell-linux-sync.test.sh
 
   # work/bootstrap.sh only ever runs on the work Mac (see AGENTS.md), and
   # its `#!/bin/sh` shebang resolves to a genuinely different shell on

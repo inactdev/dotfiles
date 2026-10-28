@@ -60,6 +60,13 @@
 # the two cannot drift apart; with no label, the binary is brought up to
 # date and nothing is started.
 #
+# That no-label form is how home-linux uses this script:
+# modules/inkwell-linux-sync.sh calls it that way and then starts or
+# restarts a systemd user service itself, because launchctl does not exist
+# there. Everything above this line - what to build and when - therefore has
+# one implementation for both hosts, and only the "and now tell the service
+# manager" half is written twice.
+#
 # That module runs this with go, git, awk and coreutils put on PATH from the
 # Nix store, so activation never depends on what a login shell happens to
 # have active; run by hand, it uses whatever those names resolve to.
