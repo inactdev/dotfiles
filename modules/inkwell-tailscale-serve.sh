@@ -30,10 +30,11 @@
 #     call here is therefore run under `timeout`.
 #
 # Run as: inkwell-tailscale-serve <local-port>
-# The port comes from modules/inkwell.nix, which is also what tells the
+# The port comes from modules/inkwell.nix on the Mac and from
+# modules/inkwell-linux.nix on home-linux - the same file that tells the
 # backend itself which port to listen on, so the two cannot drift apart.
-# That module runs this with coreutils on PATH from the Nix store, for
-# `timeout` and `tr` - macOS ships neither `timeout` nor a GNU `tr`.
+# Both run this with coreutils on PATH from the Nix store, for `timeout`
+# and `tr` - macOS ships neither `timeout` nor a GNU `tr`.
 set -euo pipefail
 
 port=${1:?usage: inkwell-tailscale-serve <local-port>}
@@ -54,7 +55,9 @@ export TAILSCALE_BE_CLI=1
 # for: whatever PATH says (the /usr/local/bin/tailscale launcher the
 # standalone app installs from its own settings lands there, and so would
 # the open-source CLI), then that launcher by absolute path - an
-# activation's PATH is not a login shell's - then the app bundle's own
+# activation's PATH is not a login shell's - then /usr/bin/tailscale, which
+# is where Tailscale's own Debian/Ubuntu package puts the CLI and therefore
+# the one home-linux has, then the app bundle's own
 # binary, which is the one personal-mac actually has. The Tailscale GUI
 # there comes from the `tailscale-app` cask, and the like-named
 # homebrew-core *formula* that would install /opt/homebrew/bin/tailscale
@@ -65,7 +68,7 @@ export TAILSCALE_BE_CLI=1
 # Overridable only so the test suite can point this at a scratch directory
 # and get the same answers on a machine that has a real tailscale installed
 # as on one that does not.
-INKWELL_TS_CLI_CANDIDATES=${INKWELL_TS_CLI_CANDIDATES:-"tailscale /usr/local/bin/tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale /opt/homebrew/bin/tailscale"}
+INKWELL_TS_CLI_CANDIDATES=${INKWELL_TS_CLI_CANDIDATES:-"tailscale /usr/local/bin/tailscale /usr/bin/tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale /opt/homebrew/bin/tailscale"}
 
 find_cli() {
   local candidate resolved

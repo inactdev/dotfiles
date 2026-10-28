@@ -117,10 +117,14 @@
       # same modules/core.nix + modules/desktop.nix + modules/fabrica.nix +
       # modules/inspector.nix as personal-mac, minus modules/mac.nix
       # (Darwin-only: herdr, and the launchd half of the self-apply job) and
-      # minus modules/inkwell.nix (Darwin-only too: a launchd agent, and
-      # one machine's notes published to one tailnet address), plus
+      # minus modules/inkwell.nix (Darwin-only too: launchd), plus
       # modules/linux.nix (Linux-only: the systemd user timer that is the
-      # other half of the self-apply job).
+      # other half of the self-apply job) and modules/inkwell-linux.nix
+      # (Linux-only: Inkwell's backend as a systemd user service, which is
+      # where it belongs - this is the always-on box. The Mac's own
+      # modules/inkwell.nix is deliberately still composed above, so the
+      # notes that exist there keep being served until they have been moved
+      # over; see modules/inkwell-linux.nix and README.md).
       # Apply with: nix run github:nix-community/home-manager/release-26.05#home-manager -- -b hm-backup switch --flake .#home-linux
       # (`./run.sh rebuild` runs exactly that. -b has no declarative
       # equivalent here - backupFileExtension, as set for personal-mac
@@ -138,6 +142,7 @@
             ./modules/core.nix
             ./modules/desktop.nix
             ./modules/fabrica.nix
+            ./modules/inkwell-linux.nix
             ./modules/inspector.nix
             ./modules/linux.nix
           ])
@@ -190,15 +195,24 @@
       # name. Nothing short of running the activation catches that, so this
       # host is what CI runs it against.
       #
-      # modules/core.nix + modules/fabrica.nix + modules/inspector.nix +
-      # modules/linux.nix, deliberately: the two modules under test, the
-      # one they share their PATH ordering with, and the other Linux-only
-      # module a home-linux activation would carry - which now contributes
-      # an activation step of its own (enabling linger for the user whose
-      # systemd timer applies the dotfiles), asserted by the same
-      # rehearsal. No modules/desktop.nix
-      # and nothing Darwin-only or secret-dependent, so the activation
-      # needs no credentials, no fonts, and no git identity. One
+      # modules/core.nix + modules/fabrica.nix + modules/inkwell-linux.nix +
+      # modules/inspector.nix + modules/linux.nix, deliberately: the two
+      # modules under test, the one they share their PATH ordering with, and
+      # the other two Linux-only modules a home-linux activation would
+      # carry - which both contribute activation steps of their own
+      # (enabling linger for the user whose systemd timer applies the
+      # dotfiles, and the four steps that check the key file, clone the
+      # notes, install the Inkwell backend and publish it), asserted by the
+      # same rehearsal. The Inkwell steps reach nothing in that container -
+      # inkwell is a private repository with no credentials there, and there
+      # is no tailscale and no key file - so each of them warns and exits 0,
+      # which is exactly the coverage wanted: what cannot be tested any
+      # other way is that a shell interprets those command lines at all.
+      # No modules/desktop.nix and nothing Darwin-only, so the activation
+      # needs no fonts and no git identity - and nothing it does need is a
+      # hard requirement: the Inkwell steps are the only credential- or
+      # secret-dependent ones in this host's set, and each of them is
+      # written to say so and carry on without. One
       # consequence worth knowing: modules/linux.nix's systemd user unit
       # points at ~/.local/bin/dotfiles-auto-apply, which
       # modules/desktop.nix is what normally symlinks - on this host the
@@ -222,6 +236,7 @@
           (homeModules [
             ./modules/core.nix
             ./modules/fabrica.nix
+            ./modules/inkwell-linux.nix
             ./modules/inspector.nix
             ./modules/linux.nix
           ])

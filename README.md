@@ -49,6 +49,13 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 - `modules/inspector.nix` - the Inspector CLI, installed and kept current
   by home-manager activation the same way (see "Inspector" below).
   `personal-mac` and `home-linux` import this; Codespaces does not.
+- `modules/inkwell.nix` - Inkwell's backend as a launchd user agent, built
+  and kept running by home-manager activation (see "Inkwell's backend on
+  the Mac" below). `personal-mac` only; launchd exists nowhere else.
+- `modules/inkwell-linux.nix` - the same backend as a systemd user service,
+  with the key file and the notes clone (see "Inkwell's backend on
+  `home-linux`" below). `home-linux` only - and the host it is actually
+  meant to run on, being the one that is always on.
 - `modules/mac.nix` - the herdr config symlink, and the launchd agent that
   drives the self-update job below (on this host it fetches and tells you
   an update is ready; it never switches). `personal-mac` only (herdr is a
@@ -64,9 +71,9 @@ get the full setup via Nix + home-manager, composed from `modules/`:
 `flake.nix` defines `darwinConfigurations.personal-mac` and
 `homeConfigurations.home-linux`/`.codespace-personal`/`.codespace-work` by
 composing these module files per host (`personal-mac` =
-core+desktop+fabrica+inspector+mac, `home-linux` =
-core+desktop+fabrica+inspector+linux, each codespace posture =
-core+codespace).
+core+desktop+fabrica+inkwell+inspector+mac, `home-linux` =
+core+desktop+fabrica+inkwell-linux+inspector+linux, each codespace posture
+= core+codespace).
 `configuration.nix` adds Darwin-only system settings and Homebrew (for the
 handful of casks/formulas Nix doesn't cover well on macOS, e.g. GUI apps).
 
@@ -212,7 +219,7 @@ Like everything else in these two steps it never fails a switch - every
 outcome is a message and an exit 0. `fabrica doctor` is the hard stop that
 refuses to start work when the wrong Inspector would win.
 
-### Inkwell's backend (`personal-mac` only)
+### Inkwell's backend on the Mac (`personal-mac`)
 
 The local server the phone posts a captured note to - it writes each one
 into `~/inkwell-notes`, a git repository of markdown it creates and commits
@@ -257,6 +264,73 @@ after a reboot. `modules/inkwell.nix` is all three parts:
 
 `~/go/bin/inkwell-backend` needs none of the shadowing guard below: launchd
 runs it by absolute path, and nothing resolves `inkwell-backend` by name.
+
+### Inkwell's backend on `home-linux`
+
+The same backend, the same port, the same `~/inkwell-notes`, on the box
+that is always on - which is where a server the phone posts to belongs,
+since a laptop that is shut answers nothing. `modules/inkwell-linux.nix` is
+the Linux counterpart of the module above: a **systemd user service**
+instead of a launchd agent, and the same two shared scripts for the two
+halves that are genuinely identical on both hosts (the build, and the
+tailnet address). Setting a cloud Linux box up as `home-linux` later is
+therefore the same switch, with nothing extra to remember.
+
+- **It runs at boot and comes back when it dies.** The service runs
+  `~/go/bin/inkwell-backend --addr 127.0.0.1:8080 --storage-dir
+  ~/inkwell-notes` with `Restart=always`, a ten-second `RestartSec` and
+  systemd's give-up rate limiter switched off, so it is retried for as long
+  as it takes rather than going quiet after five tries. Both its streams go
+  to the journal: `journalctl --user -u inkwell-backend`. It is wanted by
+  `default.target`, and because every `home-linux` switch enables linger
+  for this user (`modules/linux.nix`), "boot" rather than "login" is
+  literally true - nobody has to be logged in.
+- **The key never enters this repository.** The backend's key lives at
+  `~/.inkwell/env`, placed by hand once, and systemd loads it with
+  `EnvironmentFile=` - so nothing here holds it, names the variables in it,
+  or has to change when the backend reads one more of them. It is also the
+  one thing in this area that *refuses* rather than warns: the service's
+  `ExecStartPre` runs `modules/inkwell-key-file.sh`, which will not let the
+  backend start when that file is missing, empty, owned by somebody else or
+  readable by any other account on the machine, and says so by name with
+  the command that fixes it. The same check runs during the switch too, so
+  the message arrives where somebody is watching instead of only in the
+  journal. On a new box:
+
+  ```sh
+  mkdir -p ~/.inkwell
+  install -m 600 /dev/null ~/.inkwell/env   # created already private
+  $EDITOR ~/.inkwell/env                    # one KEY=value line per variable
+  ```
+
+- **The notes can come from somewhere.** With a notes repository to
+  continue, set `notesOrigin` in `modules/inkwell-linux.nix` to its URL and
+  the switch clones it once, before the backend is ever started - a box
+  that already has `~/inkwell-notes` is never touched, cloned over, or
+  inspected. Left empty, which is how it ships, the backend opens its own
+  repository there exactly as it does on the Mac.
+- **The binary is kept current by the switch**, by the same
+  `modules/inkwell-sync.sh` the Mac uses, so "what to build and when" has
+  one implementation. `modules/inkwell-linux-sync.sh` wraps it and owns the
+  half that cannot be shared: it notes which binary is installed, delegates
+  the build, and restarts the service only when the binary actually
+  changed - the unit text deliberately never changes, so home-manager has
+  no reason to restart anything by itself. On the switches that build
+  nothing it still makes sure the service is up, which is what brings a
+  unit back that failed for want of a key file since placed.
+- **The phone's address is configured once**, by the same
+  `tailscale serve --bg` step as the Mac - including the same refusal to
+  overwrite a node that already serves something else. The app is pointed
+  at *this* box's `https://<host>.<tailnet>.ts.net` address.
+
+Two things are deliberately left for a human. The key file above is one.
+The other is the Mac: `modules/inkwell.nix` is still composed into
+`personal-mac`, because the notes that exist today are there and stopping
+that agent would stop serving them - drop that one line from `flake.nix`
+once they have been moved over. Removing the Mac's module stops its agent
+but leaves its tailnet address published, since tailscaled keeps the serve
+configuration itself and nothing in this repository ever takes one away;
+`tailscale serve status` on the Mac is what shows whether it still answers.
 
 ### Applying itself
 
@@ -494,9 +568,11 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash modules/inkwell-sync.test.sh` - the Inkwell backend's build and agent decisions: already-current costs no build, a stale/unstamped/dirty-tree binary is rebuilt, a rebuild restarts the agent while an unchanged one only gets started if it isn't running, an agent that isn't loaded is bootstrapped, and no network, no clone, no build or a refusing `launchctl` each warn and leave what is installed and running alone - against a mocked `git`/`go`/`launchctl` on a hermetic PATH, with `$HOME`, the Go bin directory and `$TMPDIR` all under one scratch directory. It never clones, compiles, or speaks to a real launchd.
+- `bash modules/inkwell-key-file.test.sh` - the one definition of a usable key file for Inkwell's backend, which the `home-linux` service runs before every start and the switch runs once: a 0600 (or 0400) non-empty file is accepted silently, and a missing one, an empty one, a directory, a group- or world-readable one, one owned by another account, or one whose mode could not be read at all is refused by name with the command that fixes it. Mode and owner are read through a symlink, because that is the file systemd's `EnvironmentFile=` will read. It needs nothing but a scratch directory, and never reads a real `~/.inkwell/env`.
+- `bash modules/inkwell-linux-sync.test.sh` - the `home-linux` service's half of the Inkwell step: the build is delegated with no launchd label, a rebuilt binary restarts the unit while an unchanged one is only started if it isn't already running, a `failed` unit is started again, no binary means nothing is started, and no `systemctl`, no systemd user session, a failed build, a missing build script or a refused restart each warn and leave what is running alone - against a mocked `systemctl` and a stand-in build script on a hermetic PATH, with `$HOME` and the Go bin directory under one scratch directory. It never speaks to a real systemd.
 - `bash modules/inkwell-tailscale-serve.test.sh` - the serve step: an unconfigured node is published, a node already serving that port is left alone, a node serving something else is never overwritten, a port that merely starts with the same digits is not that port, and an unreachable daemon or a refused publish is a warning rather than a failed switch - against a mocked `tailscale` and a `timeout` wrapper that records the bound it was given. It never touches a real tailnet.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
-- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix` and `modules/linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
+- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix`, `modules/linux.nix` and `modules/inkwell-linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 

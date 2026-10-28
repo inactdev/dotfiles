@@ -20,10 +20,12 @@
 # homeConfigurations."ci-linux", as a separate throwaway user with a
 # scratch HOME. That is the only check anywhere in this repo that actually
 # executes the activation steps in modules/fabrica.nix,
-# modules/inspector.nix and modules/linux.nix (the two sync steps, and the
-# one that enables linger for the user whose timer applies the dotfiles) -
-# see the comment block above it for why nothing cheaper can. Two of the
-# things only that section can see: whether the Fabrica the step installs
+# modules/inspector.nix, modules/linux.nix and modules/inkwell-linux.nix
+# (the two sync steps, the one that enables linger for the user whose timer
+# applies the dotfiles, and the four that check Inkwell's key file, clone
+# its notes, install its backend and publish it) - see the comment block
+# above it for why nothing cheaper can. Two of the things only that
+# section can see: whether the Fabrica the step installs
 # carries the commit it was built from (Fabrica's `prepare` reads it out
 # of a real `.git`, so this is the only place the install's own clone is
 # proved to have one), and whether the shadowing guard cleared the
@@ -424,9 +426,12 @@ assert "work posture never writes back into its own checkout (e.g. through the ~
 # --- real activation of the Fabrica/Inspector steps (ci-linux host) ---------
 # Everything above this line is about install.sh. This section is about
 # something install.sh never touches: the two activation steps in
-# modules/fabrica.nix and modules/inspector.nix, which no codespace host
-# composes (see those files) and which therefore had no CI coverage of any
-# kind beyond `nix eval`.
+# modules/fabrica.nix and modules/inspector.nix - and, since ci-linux also
+# composes modules/linux.nix and modules/inkwell-linux.nix, their steps too
+# (linger, and the four Inkwell ones, which in this container reach no
+# private repository, no tailnet and no key file and so each warn and exit
+# 0) - none of which any codespace host composes (see those files) and
+# which therefore had no CI coverage of any kind beyond `nix eval`.
 #
 # They needed it. Both began with `$DRY_RUN_CMD PATH=...:$PATH bash ...`,
 # and a shell only treats `PATH=...` as an assignment when it is the first

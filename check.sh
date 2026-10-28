@@ -4,4 +4,4 @@
 # a worker's own box when no Inspector is installed - edit it here, in
 # the repository, rather than anywhere in Fabrica.
 set -e
-shellcheck run.sh run.test.sh install.sh install.test.sh install.container-test.sh work/*.sh home/.local/bin/* && HOME="$(mktemp -d)" bash run.test.sh && HOME="$(mktemp -d)" bash install.test.sh && HOME="$(mktemp -d)" bash work/codespace-bootstrap.test.sh && HOME="$(mktemp -d)" bash home/.local/bin/dotfiles-auto-apply.test.sh && HOME="$(mktemp -d)" bash modules/inkwell-sync.test.sh && HOME="$(mktemp -d)" bash modules/inkwell-tailscale-serve.test.sh
+shellcheck run.sh run.test.sh install.sh install.test.sh install.container-test.sh work/*.sh home/.local/bin/* && HOME="$(mktemp -d)" bash run.test.sh && HOME="$(mktemp -d)" bash install.test.sh && HOME="$(mktemp -d)" bash work/codespace-bootstrap.test.sh && HOME="$(mktemp -d)" bash home/.local/bin/dotfiles-auto-apply.test.sh && HOME="$(mktemp -d)" bash modules/inkwell-sync.test.sh && HOME="$(mktemp -d)" bash modules/inkwell-tailscale-serve.test.sh && HOME="$(mktemp -d)" bash modules/inkwell-key-file.test.sh && HOME="$(mktemp -d)" bash modules/inkwell-linux-sync.test.sh
