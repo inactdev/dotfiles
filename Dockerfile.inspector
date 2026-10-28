@@ -1,0 +1,2 @@
+# The image inspector runs the check command in (inspector#47).
+FROM cimg/base:2025.10
