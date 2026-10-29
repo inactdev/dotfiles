@@ -20,12 +20,13 @@
 # homeConfigurations."ci-linux", as a separate throwaway user with a
 # scratch HOME. That is the only check anywhere in this repo that actually
 # executes the activation steps in modules/fabrica.nix,
-# modules/inspector.nix, modules/linux.nix and modules/inkwell-linux.nix
-# (the two sync steps, the one that enables linger for the user whose timer
-# applies the dotfiles, and the four that check Inkwell's key file, clone
-# its notes, install its backend and publish it) - see the comment block
-# above it for why nothing cheaper can. Two of the things only that
-# section can see: whether the Fabrica the step installs
+# modules/inspector.nix, modules/linux.nix, modules/managed-key-file.nix and
+# modules/inkwell-linux.nix (the two sync steps, the one that enables linger
+# for the user whose timer applies the dotfiles, the one that places the one
+# key file every Fabrica and Inkwell job reads, and the four that check that
+# key file, clone Inkwell's notes, install its backend and publish it) - see
+# the comment block above it for why nothing cheaper can. Two of the things
+# only that section can see: whether the Fabrica the step installs
 # carries the commit it was built from (Fabrica's `prepare` reads it out
 # of a real `.git`, so this is the only place the install's own clone is
 # proved to have one), and whether the shadowing guard cleared the
@@ -427,11 +428,13 @@ assert "work posture never writes back into its own checkout (e.g. through the ~
 # Everything above this line is about install.sh. This section is about
 # something install.sh never touches: the two activation steps in
 # modules/fabrica.nix and modules/inspector.nix - and, since ci-linux also
-# composes modules/linux.nix and modules/inkwell-linux.nix, their steps too
-# (linger, and the four Inkwell ones, which in this container reach no
-# private repository, no tailnet and no key file and so each warn and exit
-# 0) - none of which any codespace host composes (see those files) and
-# which therefore had no CI coverage of any kind beyond `nix eval`.
+# composes modules/linux.nix, modules/managed-key-file.nix and
+# modules/inkwell-linux.nix, their steps too (linger, the key file, and the
+# four Inkwell ones, which in this container reach no private repository, no
+# tailnet and no key in the key file the step before them places, and so
+# each warn and exit 0) - none of which any codespace host composes (see
+# those files) and which therefore had no CI coverage of any kind beyond
+# `nix eval`.
 #
 # They needed it. Both began with `$DRY_RUN_CMD PATH=...:$PATH bash ...`,
 # and a shell only treats `PATH=...` as an assignment when it is the first
@@ -735,6 +738,59 @@ assert "ci-linux: a fresh login shell resolves inspector to the managed copy" \
   login_shell_runs_managed inspector
 assert "ci-linux: a fresh login shell resolves fabrica to the managed copy" \
   login_shell_runs_managed fabrica
+
+# --- the key-file step (modules/managed-key-file.nix) -----------------------
+# One key file for every Fabrica and Inkwell job on a machine, placed by the
+# switch and private from the moment it exists (inkwell#46). A scratch HOME
+# is the only interesting case this container can present - there is no key
+# to migrate here - and it is also the case that matters most: what the step
+# must produce on a box that has never had a key file is an *empty* file at
+# mode 600 and a symlink at the old Inkwell path, with no key anywhere in
+# sight.
+#
+# Asserted here rather than only in modules/managed-key-file.test.sh for the
+# reason the whole section exists: the hermetic suite runs the script, and
+# only a real activation runs the step's *command line*, which is the one
+# thing no test in this repository can interpret for itself.
+assert "ci-linux: the key-file step reported for itself during activation" \
+  grep -q "managed-key-file:" "$CI_HOST_LOG"
+
+# Its own backstop, which the "neither sync step" check above cannot see:
+# that one greps for `-sync exited non-zero`, and this step is not a sync.
+key_file_step_did_not_hit_its_backstop() {
+  ! grep -q "managed-key-file exited non-zero" "$CI_HOST_LOG"
+}
+assert "ci-linux: the key-file step did not hit its non-zero backstop" \
+  key_file_step_did_not_hit_its_backstop
+
+key_file_is_private_and_empty() {
+  local mode size
+  mode="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    'stat -c %a "$HOME/.fabrica/brain.env" 2>/dev/null')"
+  size="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    'stat -c %s "$HOME/.fabrica/brain.env" 2>/dev/null')"
+  if [ "$mode" = "600" ] && [ "$size" = "0" ]; then
+    return 0
+  fi
+  echo "  ~/.fabrica/brain.env: mode=${mode:-<absent>} size=${size:-<absent>}" >&2
+  return 1
+}
+assert "ci-linux: the step placed ~/.fabrica/brain.env empty and mode 600" \
+  key_file_is_private_and_empty
+
+old_inkwell_path_resolves_to_the_key_file() {
+  docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    '[ -L "$HOME/.inkwell/env" ] &&
+     [ "$(readlink -f "$HOME/.inkwell/env")" = "$(readlink -f "$HOME/.fabrica/brain.env")" ]'
+}
+assert "ci-linux: ~/.inkwell/env is a symlink to that one file" \
+  old_inkwell_path_resolves_to_the_key_file
+
+# The step runs before the Inkwell guard, which is what makes the guard's
+# message about an empty file rather than a missing one - the two entries are
+# otherwise each merely "after writeBoundary", which orders neither.
+assert "ci-linux: the Inkwell guard refused the placed-but-empty key file by name" \
+  grep -q "is empty, so there is no key in it" "$CI_HOST_LOG"
 
 # --- the linger step (modules/linux.nix) ------------------------------------
 # The other thing only a real activation can check: modules/linux.nix now

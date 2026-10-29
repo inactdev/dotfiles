@@ -55,12 +55,19 @@ let
   port = 8080;
   listenAddr = "127.0.0.1:${toString port}";
 
-  # The key file, placed by hand once and never by this repository: see
-  # modules/inkwell-key-file.sh for what is checked about it and
-  # README.md for the commands that put it there. systemd loads it as
-  # the service's environment, so which variables are in it is the file's
-  # business and not this module's.
-  keyFile = "${config.home.homeDirectory}/.inkwell/env";
+  # The key file - one file on this machine, read by every Fabrica job as
+  # well as by the backend below, placed (empty, mode 600) by
+  # modules/managed-key-file.nix and filled in by hand exactly once. Named
+  # here by its canonical path from modules/managed-paths.nix rather than by
+  # the old ~/.inkwell/env, which is now a symlink to it: the file systemd
+  # loads and the file the guard reports about should be the one a human was
+  # told to edit, and a refusal that names a symlink would send that human
+  # to the wrong path. See modules/inkwell-key-file.sh for what is checked
+  # about it and README.md for how the key gets into it.
+  #
+  # systemd loads it as the service's environment, so which variables are in
+  # it is the file's business and not this module's.
+  keyFile = managedPaths.keyFile;
 
   # The unit, by name, for the one script that has to start and restart it.
   # Written out rather than read back off the systemd.user.services
@@ -74,9 +81,15 @@ let
   keyFileCheck = ./inkwell-key-file.sh;
   tailscaleServe = ./inkwell-tailscale-serve.sh;
 
-  # The activation entries the install step must follow - see the comment
-  # above that step for what each of them is for. Bound here rather than
-  # written inline only to keep that line within the formatter's width.
+  # The activation entries the key-file check and the install step must
+  # follow - see the comment above each of them for what they are for. Bound
+  # here rather than written inline only to keep those lines within the
+  # formatter's width.
+  checkAfter = [
+    "writeBoundary"
+    "placeManagedKeyFile"
+  ];
+
   installAfter = [
     "linkGeneration"
     "reloadSystemd"
@@ -138,8 +151,8 @@ in
 # Four parts, in the order they run:
 #
 #   1. an activation step that says - during the switch, where somebody is
-#      watching - whether the hand-placed key file is there and private
-#      enough to start the backend with (modules/inkwell-key-file.sh);
+#      watching - whether the key file is there, has a key in it, and is
+#      private enough to start the backend with (modules/inkwell-key-file.sh);
 #   2. an activation step that clones the notes repository, once, onto a box
 #      that has none yet (see notesOrigin above);
 #   3. an activation step that builds the binary from the tip of inkwell's
@@ -156,8 +169,10 @@ in
 # user, which modules/linux.nix enables on every home-linux switch (a systemd
 # *user* service only runs while that user's systemd instance is up, so a
 # headless box without linger would run the backend only while somebody was
-# logged in), and the key file, which is the one thing about Inkwell nobody
-# can declare here.
+# logged in), and the key file, which is modules/managed-key-file.nix's job
+# because the same file is what every Fabrica job on the box reads - this
+# module only reads it and refuses without it. Its *contents* remain the one
+# thing about Inkwell nobody can declare anywhere in this repository.
 {
   # Restart = always, unconditionally: this is a server, so every exit is a
   # reason to start it again - including the exits of its own making (the
@@ -184,14 +199,19 @@ in
 
     Service = {
       # The key file, as systemd's own environment file - so the key reaches
-      # the backend without this configuration ever naming, holding, or
-      # being able to read it, and the day the backend wants a second
-      # variable nothing here changes.
+      # the backend without this configuration ever holding it, naming the
+      # variables in it, or being able to read it, and the day the backend
+      # wants a second variable nothing here changes.
       #
       # The leading `-` makes a missing file systemd's non-event rather than
       # systemd's error, deliberately: the ExecStartPre below is what refuses
       # to start the backend without a key, and it says so in words that name
-      # the file and the commands that fix it. Without the `-`, systemd's own
+      # the file and the commands that fix it. It stays even though the switch
+      # now places that file (modules/managed-key-file.nix), because the file
+      # it places is *empty* until a human puts a key in it - which systemd
+      # loads without complaint and the guard below is what catches. Nothing
+      # guarantees the placing step has ever run on a box this unit is on
+      # either. Without the `-`, systemd's own
       # "failed to load environment files" would get there first and be the
       # only thing in the journal.
       EnvironmentFile = "-${keyFile}";
@@ -232,7 +252,13 @@ in
   # refusal; this is the same question asked where a human can see the
   # answer, because the alternative is finding out from the journal that the
   # backend has been down since the box was built.
-  home.activation.checkInkwellKeyFile = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+  # placeManagedKeyFile is modules/managed-key-file.nix's step, and naming it
+  # is load-bearing: both entries are otherwise merely "after writeBoundary",
+  # which puts them in no particular order relative to each other, and this
+  # check reporting a missing key file on the very switch that placed it
+  # would be the one run where its message is wrong. Naming an entry a host
+  # does not have is harmless - home-manager's DAG simply never matches it.
+  home.activation.checkInkwellKeyFile = lib.hm.dag.entryAfter checkAfter ''
     if ${pkgs.coreutils}/bin/env PATH="${coreutilsPath}:$PATH" ${pkgs.bash}/bin/bash \
       ${keyFileCheck} ${lib.escapeShellArg keyFile}; then
       echo "inkwell-backend: the key file at ${keyFile} is in place."
