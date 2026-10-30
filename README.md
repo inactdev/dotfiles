@@ -454,7 +454,8 @@ Nix, no home-manager. Everything for that path lives under `work/`:
 
 - `work/Brewfile` - the exact formula/cask list for the work host, and the
   intent Codespaces' work posture mirrors via apt/npm/release binaries
-  (below).
+  (below). Docker Desktop is deliberately *not* in it - see "Docker
+  Desktop" below.
 - `work/bootstrap.sh` - installs Homebrew if missing, runs `brew bundle`,
   symlinks the same `home/.config/*` and `AGENTS.md` files the Nix path
   uses plus ghostty (no wezterm/herdr - see below), links `work/zshrc` and
@@ -462,7 +463,8 @@ Nix, no home-manager. Everything for that path lives under `work/`:
   prompted for, never defaulted), and applies the macOS `defaults` the Nix
   path also sets. Idempotent - safe to re-run any time, including via
   `./run.sh rebuild` once `work` is the remembered/chosen host. It also
-  installs Fabrica and Inspector (see below).
+  installs Fabrica and Inspector, and checks for Docker Desktop without
+  installing it (both see below).
   Everything in it except the Homebrew/`brew bundle` install step, the
   macOS `defaults`, and the Fabrica/Inspector steps is plain shell with
   nothing macOS-specific about it, and is sourced (not copied) by
@@ -534,13 +536,34 @@ codespace hosts are left out of `modules/fabrica.nix`/`modules/inspector.nix`:
 a container is a place work gets done, not a place it gets dispatched from
 or checked.
 
+### Docker Desktop
+
+Docker is installed on the work Mac through the company's Self-Service
+app, never Homebrew, so `work/Brewfile` has no `docker-desktop` cask and
+must not grow one: `brew bundle` would otherwise either fight the managed
+copy or install a second, unmanaged one alongside it.
+
+The bootstrap only *looks* for it, as its last step: `docker` on PATH and
+`/Applications/Docker.app` present. Both halves, because either alone is a
+false positive - a `docker` with no app bundle is usually a leftover CLI
+from a former install (or a colima/podman shim), and an app bundle that
+has never been launched hasn't created its CLI symlinks yet. If the check
+comes up short, the closing summary carries one line telling you to
+install Docker Desktop from Self-Service. That is a pending item, not a
+failure: nothing else in the bootstrap depends on Docker, and Self-Service
+is a human, GUI step no script here can drive.
+
+This applies to the work Mac only. The personal Mac keeps installing
+Docker Desktop itself via `configuration.nix`'s Homebrew casks, and
+Codespaces has no Docker Desktop to install either way.
+
 Deliberately excluded from the work host, by captain decision:
 wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
 imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
 The bootstrap ends with a short summary of anything it couldn't finish
 (GitHub login, MDM-locked macOS settings, a still-unset git identity, a
-Fabrica or Inspector install that didn't land).
+Fabrica or Inspector install that didn't land, a missing Docker Desktop).
 
 ## GitHub Codespaces
 

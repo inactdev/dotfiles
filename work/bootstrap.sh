@@ -12,9 +12,11 @@
 # this file, which exists for exactly that (and is what already lets
 # work/bootstrap.test.sh source it directly). Every function below except
 # brew_bin/install_homebrew/install_packages/install_ghostty_symlink/
-# macos_write_default/configure_macos_defaults is plain shell with
-# nothing macOS-specific about it and is reused as-is by the codespace
-# path rather than copied - see AGENTS.md.
+# check_docker/macos_write_default/configure_macos_defaults is plain shell
+# with nothing macOS-specific about it and is reused as-is by the codespace
+# path rather than copied - see AGENTS.md. check_docker is on that list for
+# the same reason as install_ghostty_symlink: it looks for a macOS .app
+# installed by the company's Self-Service app, and a container has neither.
 #
 # install_fabrica/install_inspector are the exception to that rule: they
 # are plain shell too, and the codespace path still does not call them.
@@ -27,17 +29,19 @@ set -euo pipefail
 # Collected here so the final summary can tell the captain what still
 # needs a human, instead of silently doing nothing.
 #
-# FABRICA_PENDING/INSPECTOR_PENDING are read only by this file's own
-# print_summary. work/codespace-bootstrap.sh defines its own print_summary
-# that shadows this one and never installs either tool, so sourcing this
-# file leaves it with two counters it ignores - deliberately, rather than
-# threading them through the shared print_git_gh_pending, which would put
-# work-Mac-only state into the codespace summary.
+# FABRICA_PENDING/INSPECTOR_PENDING/DOCKER_PENDING are read only by this
+# file's own print_summary. work/codespace-bootstrap.sh defines its own
+# print_summary that shadows this one and never installs either tool nor
+# looks for Docker, so sourcing this file leaves it with three counters it
+# ignores - deliberately, rather than threading them through the shared
+# print_git_gh_pending, which would put work-Mac-only state into the
+# codespace summary.
 GIT_IDENTITY_PENDING=0
 MACOS_DEFAULTS_PENDING=0
 GH_LOGIN_PENDING=0
 FABRICA_PENDING=0
 INSPECTOR_PENDING=0
+DOCKER_PENDING=0
 
 # The two repositories this host installs from, and where their binaries
 # land. $HOME/.local rather than npm's own global prefix (Homebrew's, on
@@ -51,6 +55,14 @@ FABRICA_REPO_URL=https://github.com/inactdev/fabrica.git
 FABRICA_BRANCH=master
 INSPECTOR_PKG_PATH=github.com/inactdev/inspector/cmd/inspector
 MANAGED_PREFIX="$HOME/.local"
+
+# Where Docker Desktop lands when it is installed from the company's
+# Self-Service app. Not installed by this script (see check_docker and
+# work/Brewfile) - only looked for. Overridable solely so
+# work/bootstrap.test.sh can point the check at a scratch directory and
+# exercise both the present and the missing case on any machine; nothing
+# in normal use sets it.
+DOCKER_APP="${DOCKER_APP:-/Applications/Docker.app}"
 
 brew_bin() {
   if command -v brew >/dev/null 2>&1; then
@@ -343,6 +355,27 @@ install_inspector() {
   return 0
 }
 
+# Docker Desktop is the one tool this host needs that Homebrew must not
+# provide: the work Mac gets it from the company's Self-Service app, which
+# installs and updates a managed copy. So this only *looks* for it, and a
+# miss is a pending item in the closing summary rather than a failure -
+# nothing else in the bootstrap depends on Docker, and Self-Service is a
+# human, GUI step that no script here can drive.
+#
+# Both halves are checked because either one alone is a false positive:
+# a `docker` on PATH with no Docker.app is usually a stray CLI from a
+# former install (or a colima/podman shim), and a Docker.app that has
+# never been launched has not yet created its CLI symlinks, so the daemon
+# is there but `docker` is not.
+check_docker() {
+  echo "==> checking for Docker Desktop"
+  if command -v docker >/dev/null 2>&1 && [ -d "$DOCKER_APP" ]; then
+    echo "    Docker Desktop already installed"
+    return
+  fi
+  DOCKER_PENDING=1
+}
+
 macos_write_default() {
   if ! defaults write "$@" >/dev/null 2>&1; then
     echo "    WARN: could not set '$*' (likely locked by MDM)"
@@ -379,9 +412,12 @@ print_summary() {
   echo "==> done"
   if [ "$GIT_IDENTITY_PENDING" = 1 ] || [ "$MACOS_DEFAULTS_PENDING" = 1 ] ||
     [ "$GH_LOGIN_PENDING" = 1 ] || [ "$FABRICA_PENDING" = 1 ] ||
-    [ "$INSPECTOR_PENDING" = 1 ]; then
+    [ "$INSPECTOR_PENDING" = 1 ] || [ "$DOCKER_PENDING" = 1 ]; then
     echo "Still needs attention:"
     print_git_gh_pending
+    if [ "$DOCKER_PENDING" = 1 ]; then
+      echo "  - Docker Desktop: install it from Self-Service (not a Homebrew cask here)"
+    fi
     if [ "$FABRICA_PENDING" = 1 ]; then
       echo "  - Fabrica: not installed; see the warning above, then re-run this bootstrap"
     fi
@@ -415,6 +451,10 @@ main() {
   install_fabrica
   install_inspector
   configure_macos_defaults
+  # Last of the real steps: it installs nothing, it only reports, so its
+  # one line belongs next to the summary it feeds rather than up with the
+  # package installs.
+  check_docker
   print_summary
 }
 
