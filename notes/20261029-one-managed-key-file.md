@@ -90,6 +90,49 @@ empty, so there is no key in it". Two consequences:
   matters is the first one on a box - where the check would otherwise report
   a missing key file that had just been placed.
 
+## The key file is placed before the write boundary, on purpose
+
+`placeManagedKeyFile` is `entryBefore [ "checkLinkTargets" ]`, not the
+`entryAfter [ "writeBoundary" ]` every other activation step in this
+repository uses. Two facts make that the right position rather than a
+shortcut, and both are worth keeping because they are invisible from the
+file:
+
+- **`checkLinkTargets` aborts the whole activation.** It runs before
+  `writeBoundary`, and it `exit 1`s on any unmanaged path sitting where a
+  managed file goes. `-b hm-backup` does not rescue all of them: a
+  *symlink* in the way is never backed up (home-manager's
+  `check-link-targets.sh` requires `! -L` on both backup branches), and a
+  backup that would clobber an existing `*.hm-backup` is refused outright.
+  Every step after it then simply does not run, and the whole switch
+  reports one failure a long way from the step that lost its work.
+- **Nothing this step does needs the boundary.** `~/.fabrica/brain.env`
+  and `~/.inkwell/env` are declared by no module, so `linkGeneration`
+  never looks at them, and the step reads nothing out of the generation.
+  The boundary exists to keep steps from writing files home-manager is
+  about to link; this step writes neither.
+
+So the one key file is placed whether or not the generation behind it
+links, which is what it needs to be: the Inkwell backend's `ExecStartPre`
+guard and every Fabrica job resolve that path independently of any
+home-manager generation. The order on `ci-linux` (verified against
+`lib.toposort`'s real behaviour, not guessed - it emits
+`a,c,b,d,e` for `dag.nix`'s own documented example) is now
+`checkFilesChanged`, `placeManagedKeyFile`, `checkLinkTargets`,
+`writeBoundary`, `checkInkwellKeyFile`, ... - so the placement is second,
+the guard still follows it, and nothing else moved.
+
+A corollary for reading `install.container-test.sh` failures: its
+`ci-linux` section has 27 assertions, and exactly 6 of them pass when the
+activation produces nothing at all (the ones phrased as absences - no
+backstop, no stray tempdir, no assignment run as a command, the seeded
+checkout untouched). An abort anywhere in the activation therefore shows
+up as **21 failures**, whichever step actually died. Read the switch log
+the section `cat`s before the first assertion rather than the assertion
+names; a step that merely refused would have printed its own prefixed line
+in there, since every refusal in `modules/managed-key-file.sh` says so and
+still exits 0.
+
 ## One formatter rule this change tripped over
 
 `modules/managed-paths.nix` now exports four names, and **nixfmt expands an

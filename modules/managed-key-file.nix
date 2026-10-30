@@ -63,16 +63,36 @@ in
 # it to <path>.hm-backup - which, for a file holding a key, leaves a second
 # copy of that key on disk and is precisely the smell this exists to end.
 {
-  # Ordered after "writeBoundary" and nothing else: writeBoundary is the
-  # point after which an activation step may touch the user's files at all,
-  # which is the only thing this step needs - it reads nothing from the
-  # generation, so linkGeneration is not its concern.
+  # Ordered *before* home-manager's own "checkLinkTargets", which makes this
+  # the first thing any switch does. Two reasons, and the second is why it is
+  # not the usual `entryAfter [ "writeBoundary" ]`:
+  #
+  #   - nothing here needs the write boundary. That marker is the point after
+  #     which a step may touch files home-manager itself links, and the two
+  #     paths this step writes - ~/.fabrica/brain.env and ~/.inkwell/env - are
+  #     paths no module declares and linkGeneration never touches. The step
+  #     also reads nothing from the generation.
+  #   - checkLinkTargets aborts the *entire* activation with exit 1 whenever
+  #     an unmanaged file or symlink is sitting where a managed file goes
+  #     (a symlink is not rescued by -b hm-backup, and a backup that would
+  #     clobber an existing one is refused outright). Every step after it,
+  #     this one included, then silently does not run - and a key file is the
+  #     wrong thing to lose to an unrelated collision somewhere else in the
+  #     home directory, because the Inkwell backend's guard and every Fabrica
+  #     job are left pointing at a file that does not exist. Placing it first
+  #     costs nothing and takes the whole rest of the activation out of the
+  #     question: an empty private file and a symlink are correct on their own
+  #     terms whether or not the generation that follows them links.
+  #
+  # The step stays idempotent and silent once the file is there, so being
+  # first changes nothing on any later switch, and `run` still only prints
+  # under a dry run.
   #
   # modules/inkwell-linux.nix's checkInkwellKeyFile names *this* entry in its
-  # own entryAfter, because two entries that are each merely "after
-  # writeBoundary" are in no particular order relative to each other - and
-  # the check reporting a missing key file on the very switch that placed it
-  # would be the one run where its message is wrong.
+  # own entryAfter, which is what keeps the check downstream of the placement
+  # (it would otherwise be merely "after writeBoundary", which orders it
+  # against nothing) - and the check reporting a missing key file on the very
+  # switch that placed it would be the one run where its message is wrong.
   #
   # `run`, because this step writes: a dry run prints the command instead of
   # executing it. `env` is what applies the PATH, and it is the first word on
@@ -87,7 +107,7 @@ in
   # interpreter, a bug): the hard refusal about this key file belongs to the
   # service that reads it, and tidying one key file is never worth losing the
   # rest of an activation over.
-  home.activation.placeManagedKeyFile = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+  home.activation.placeManagedKeyFile = lib.hm.dag.entryBefore [ "checkLinkTargets" ] ''
     run ${pkgs.coreutils}/bin/env PATH="${stepPath}:$PATH" ${pkgs.bash}/bin/bash \
       ${keyFileStep} ${lib.escapeShellArg keyFile} ${lib.escapeShellArg keyFileLink} \
       || echo "managed-key-file exited non-zero; continuing activation." >&2
