@@ -593,6 +593,9 @@ test_brewfile_provides_node_and_go() {
 test_zshrc_loads_fnm_guarded() {
   setup
   zshrc=$(cat "$REPO_DIR/work/zshrc")
+  # The single quotes are deliberate: this is the literal text expected in
+  # work/zshrc, not an expansion the test wants performed.
+  # shellcheck disable=SC2016
   assert_contains "zshrc evaluates fnm env" "$zshrc" 'eval "$(fnm env --use-on-cd --shell zsh)"'
   assert_contains "zshrc guards the fnm eval on fnm being installed" "$zshrc" \
     'if command -v fnm >/dev/null 2>&1; then'
@@ -744,7 +747,8 @@ test_fnm_install_failure_warns_and_continues() {
 test_fabrica_home_is_created_with_tight_modes_and_config() {
   setup
   run_bootstrap >"$TMP/out.log" 2>&1 || true
-  assert_eq "~/.fabrica is private to the user" "700" "$(file_mode "$HOME/.fabrica")"
+  assert_eq "the Fabrica home is private to the user" "700" \
+    "$(file_mode "$HOME/.fabrica")"
   assert_eq "brain.env is created" "" "$(cat "$HOME/.fabrica/brain.env")"
   assert_eq "brain.env is readable only by the user" "600" \
     "$(file_mode "$HOME/.fabrica/brain.env")"
