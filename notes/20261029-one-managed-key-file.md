@@ -90,6 +90,20 @@ empty, so there is no key in it". Two consequences:
   matters is the first one on a box - where the check would otherwise report
   a missing key file that had just been placed.
 
+## One formatter rule this change tripped over
+
+`modules/managed-paths.nix` now exports four names, and **nixfmt expands an
+`inherit` statement with four or more names onto one name per line, with the
+`;` on a line of its own** - it is a count rule, not a width rule
+(`length ids < 4` in nixfmt's own `Pretty.hs`, the same place the
+single-`inherit` attrset carve-out in
+`notes/20261021-activation-step-env-path.md` comes from). So
+`inherit goBin npmPrefix;` on one line passes and
+`inherit goBin npmPrefix keyFile keyFileLink;` on one line fails
+`nixfmt --check`. Lists follow the neighbouring rule for the same reason:
+more than one element is always expanded, however short it is, which is why
+`checkAfter` and `stepPath` are written out and `[ "writeBoundary" ]` is not.
+
 ## The two hosts, and the one that is only a rehearsal
 
 `personal-mac` and `home-linux` compose the module: both run Fabrica jobs,

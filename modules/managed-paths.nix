@@ -42,6 +42,11 @@ let
 in
 
 {
-  inherit goBin npmPrefix keyFile keyFileLink;
+  inherit
+    goBin
+    npmPrefix
+    keyFile
+    keyFileLink
+    ;
   npmBin = "${npmPrefix}/bin";
 }
