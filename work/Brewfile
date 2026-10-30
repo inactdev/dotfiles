@@ -5,6 +5,13 @@
 # Also the intent (not the manifest) for the codespace-work path: adding or
 # removing a line here means work/codespace-bootstrap.sh needs the matching
 # apt/npm/release-binary install too - see that file's header comment.
+#
+# Docker Desktop is deliberately absent and must stay absent: on the work
+# Mac it is distributed through the company's Self-Service app, never
+# Homebrew, so a `cask "docker-desktop"` line here would either fight the
+# managed copy or install a second, unmanaged one. work/bootstrap.sh's
+# check_docker instead looks for it at the end of a run and reports it as
+# a pending item when it isn't there.
 
 brew "git"
 brew "ripgrep"
@@ -26,5 +33,4 @@ brew "zsh-syntax-highlighting"
 
 cask "ghostty"
 cask "claude-code"
-cask "docker-desktop"
 cask "font-inconsolata-nerd-font"

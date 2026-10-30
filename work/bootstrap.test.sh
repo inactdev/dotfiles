@@ -139,6 +139,12 @@ setup() {
   MOCK_DIR="$TMP/bin"
   FIXTURES="$TMP/fixtures"
   HOME="$TMP/home"
+  # Stands in for /Applications/Docker.app, which this suite must never
+  # read (it would report whatever the machine running the tests happens
+  # to have) and could not create anyway. Deliberately NOT created here:
+  # "Docker Desktop is missing" is the default state, and the tests that
+  # want it present mkdir it themselves.
+  DOCKER_APP="$TMP/Applications/Docker.app"
   mkdir -p "$MOCK_DIR" "$FIXTURES" "$HOME" "$TMP/tmp"
   mock_bin "$MOCK_DIR"
   : >"$FIXTURES/brew.log"
@@ -171,7 +177,18 @@ run_bootstrap() {
   # directory there, so a leak is visible to the leftover assertion below
   # and is cleaned up with the rest of the scratch dir either way.
   HOME="$HOME" FIXTURES="$FIXTURES" REAL_GIT="$REAL_GIT" TMPDIR="$TMP/tmp" \
+    DOCKER_APP="$DOCKER_APP" \
     PATH="$MOCK_DIR:/usr/bin:/bin" "$SCRIPT" "$REPO_DIR" </dev/null
+}
+
+# A `docker` that does nothing but exist, so check_docker's `command -v`
+# half is satisfied without a real Docker anywhere near this run.
+mock_docker_cli() {
+  cat >"$MOCK_DIR/docker" <<'MOCK'
+#!/bin/sh
+exit 0
+MOCK
+  chmod +x "$MOCK_DIR/docker"
 }
 
 assert_eq() {
@@ -455,6 +472,77 @@ test_brewfile_provides_node_and_go() {
   teardown
 }
 
+# Docker Desktop comes from the company's Self-Service app on this host,
+# so `brew bundle` must never try to install or upgrade a cask for it -
+# the managed copy is the only copy. The check is on the cask line rather
+# than the word "docker" so the explanatory comment in the Brewfile is
+# free to say why.
+test_brewfile_does_not_install_docker_desktop() {
+  setup
+  brewfile=$(grep -v '^[[:space:]]*#' "$REPO_DIR/work/Brewfile" || true)
+  case "$brewfile" in
+    *docker*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - work/Brewfile must not install Docker; it comes from Self-Service"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - work/Brewfile installs no Docker cask"
+      ;;
+  esac
+  teardown
+}
+
+test_docker_present_is_not_flagged_pending() {
+  setup
+  mock_docker_cli
+  mkdir -p "$DOCKER_APP"
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap exits 0 with Docker installed" "0" "$code"
+  assert_contains "says Docker Desktop is already installed" "$out" "Docker Desktop already installed"
+  case "$out" in
+    *"Docker Desktop: install it"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - an installed Docker Desktop must not be flagged pending"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - an installed Docker Desktop is not flagged pending"
+      ;;
+  esac
+  teardown
+}
+
+# Missing Docker is a pending item, never a failure: nothing else in the
+# bootstrap needs Docker, and installing it is a human step in a GUI app
+# that no script here can drive.
+test_docker_missing_is_pending_not_a_failure() {
+  setup
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap still exits 0 with Docker missing" "0" "$code"
+  assert_contains "summary points at Self-Service" "$out" "Docker Desktop: install it from Self-Service"
+  assert_contains "it is listed as pending, not as an error" "$out" "Still needs attention:"
+  assert_contains "the rest of the bootstrap still ran" "$out" "applying macOS defaults"
+  teardown
+}
+
+# The half-installed state check_docker exists to catch: a leftover
+# `docker` CLI (a former install, or a colima/podman shim) with no
+# Docker.app behind it. Asserted from this direction rather than the
+# other because it holds whatever the machine running the suite has on
+# its own PATH - the hermetic PATH still ends in /usr/bin:/bin, so a
+# system `docker` there would otherwise decide the result. The reverse
+# case (app present, CLI absent) is the same `&&`, read the other way.
+test_docker_cli_without_the_app_is_still_pending() {
+  setup
+  mock_docker_cli
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap still exits 0" "0" "$code"
+  assert_contains "a stray docker CLI alone does not count as installed" \
+    "$out" "Docker Desktop: install it from Self-Service"
+  teardown
+}
+
 test_no_username_hardcoded_in_source() {
   # Static check, not a run_bootstrap scenario: the *code* must never
   # hard-code the personal username, independent of where this particular
@@ -493,6 +581,10 @@ test_existing_git_identity_is_preserved_and_not_pending
 test_macos_defaults_failure_warns_and_continues
 test_brew_bundle_invoked_with_work_brewfile
 test_brewfile_provides_node_and_go
+test_brewfile_does_not_install_docker_desktop
+test_docker_present_is_not_flagged_pending
+test_docker_missing_is_pending_not_a_failure
+test_docker_cli_without_the_app_is_still_pending
 test_fabrica_installed_via_clone_then_pack
 test_fabrica_never_installed_from_a_git_spec
 test_inspector_installed_with_go_install_latest
