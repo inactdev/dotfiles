@@ -461,11 +461,13 @@ Nix, no home-manager. Everything for that path lives under `work/`:
   `work/claude-settings.json` into place, configures git (identity is
   prompted for, never defaulted), and applies the macOS `defaults` the Nix
   path also sets. Idempotent - safe to re-run any time, including via
-  `./run.sh rebuild` once `work` is the remembered/chosen host.
-  Everything in it except the Homebrew/`brew bundle` install step and the
-  macOS `defaults` is plain shell with nothing macOS-specific about it,
-  and is sourced (not copied) by `work/codespace-bootstrap.sh` below - see
-  that file's own header comment for exactly which functions are shared.
+  `./run.sh rebuild` once `work` is the remembered/chosen host. It also
+  installs Fabrica and Inspector (see below).
+  Everything in it except the Homebrew/`brew bundle` install step, the
+  macOS `defaults`, and the Fabrica/Inspector steps is plain shell with
+  nothing macOS-specific about it, and is sourced (not copied) by
+  `work/codespace-bootstrap.sh` below - see that file's own header comment
+  for exactly which functions are shared.
 - `work/zshrc` - the real `~/.zshrc` for *both* the work Mac and
   Codespaces' work posture: it self-detects Homebrew vs. apt at runtime
   (`command -v brew`) rather than existing as two files that would need
@@ -487,12 +489,58 @@ Nix, no home-manager. Everything for that path lives under `work/`:
     this divergence as intentional, not drift, when comparing the two
     files.
 
+### Fabrica and Inspector on the work Mac
+
+The work host gets the same floor under both tools that
+`modules/fabrica.nix` and `modules/inspector.nix` give `personal-mac` and
+`home-linux` - every `./run.sh bootstrap work --no-nix` and every
+`./run.sh rebuild` on this host installs the current Fabrica and the
+current Inspector. `node` and `go` come from `work/Brewfile`, which
+already lists both.
+
+- **Fabrica** is installed the three-step way its own README prescribes:
+  `git clone --depth 1 --branch master` of
+  `github.com/inactdev/fabrica` into a temporary directory, `npm pack`
+  inside that clone, then `npm install -g` of the tarball that produced.
+  Never `npm install -g github:inactdev/fabrica`, and never `npm pack` of
+  that spec either - the reasons are the same ones spelled out under
+  "Fabrica" above for the Nix hosts, and the symptom of either shortcut is
+  `fabrica doctor` refusing to start work. The clone and the tarball are
+  removed whichever way the install goes.
+- **Inspector** is installed with the one command its own documentation
+  gives: `go install github.com/inactdev/inspector/cmd/inspector@latest`.
+- **Both land under `~/.local`** (`~/.local/bin/fabrica`,
+  `~/.local/bin/inspector`), which `work/zshrc` already exports on PATH -
+  not in npm's own global prefix and not in Go's default `~/go/bin`, which
+  this host does not put on PATH at all. One directory, no sudo, nothing
+  that depends on a writable Homebrew prefix.
+- **Neither failure is fatal.** Fabrica's repository is private, so a
+  machine whose `gh auth login` is still pending cannot clone it at all;
+  that warns, lands in the closing summary as "Fabrica: not installed",
+  and leaves the rest of the bootstrap - which has already linked every
+  config and installed every package - alone. Same for any `go install`
+  failure. Both steps run *after* the git/`gh auth setup-git` step for
+  exactly that reason.
+
+Unlike the Nix hosts, there is no `git ls-remote` comparison first: a
+home-manager activation runs on its own schedule and must not cost a clone
+every time, whereas a work-host bootstrap or rebuild is a command someone
+ran on purpose. So these simply install the current version every time,
+which is what "idempotent" has to mean for a step whose job is "be
+current".
+
+Codespaces' work posture is deliberately left out of this, exactly as both
+codespace hosts are left out of `modules/fabrica.nix`/`modules/inspector.nix`:
+a container is a place work gets done, not a place it gets dispatched from
+or checked.
+
 Deliberately excluded from the work host, by captain decision:
 wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
 imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
 The bootstrap ends with a short summary of anything it couldn't finish
-(GitHub login, MDM-locked macOS settings, a still-unset git identity).
+(GitHub login, MDM-locked macOS settings, a still-unset git identity, a
+Fabrica or Inspector install that didn't land).
 
 ## GitHub Codespaces
 
@@ -564,7 +612,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 ## Tests
 
 - `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`, and that a successful rebuild records the commit it applied where the self-update job reads it.
-- `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh` on a hermetic `$HOME`.
+- `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh`/`npm`/`go` on a hermetic `$HOME`, plus a `git` that is real for everything except `clone` (so the Fabrica install's clone of a private repository is exercised without ever reaching the network). Covers the clone/pack/`npm install -g` chain, the `go install ...@latest` command and the environment it runs under, the fact that npm is never handed a `github:` spec, and that a refused clone, a failing `npm` or a failing `go` each warn, report themselves in the summary, clean up their temp directory and still leave the bootstrap exiting 0.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash modules/inkwell-sync.test.sh` - the Inkwell backend's build and agent decisions: already-current costs no build, a stale/unstamped/dirty-tree binary is rebuilt, a rebuild restarts the agent while an unchanged one only gets started if it isn't running, an agent that isn't loaded is bootstrapped, and no network, no clone, no build or a refusing `launchctl` each warn and leave what is installed and running alone - against a mocked `git`/`go`/`launchctl` on a hermetic PATH, with `$HOME`, the Go bin directory and `$TMPDIR` all under one scratch directory. It never clones, compiles, or speaks to a real launchd.
