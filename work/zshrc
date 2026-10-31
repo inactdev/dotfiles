@@ -24,6 +24,27 @@ alias bx="bundle exec"
 alias cssh="infocmp -x xterm-ghostty | ssh gh codespace ssh tic -x -h"
 alias cc=claude
 
+# Per-project node, same idea as modules/core.nix gives the Nix hosts: fnm
+# switches on cd to whatever .node-version (or .nvmrc) a project declares,
+# and its own bin dir goes ahead of Homebrew's node, which stays the
+# fallback for everywhere that declares nothing. Guarded like rbenv below -
+# fnm comes from work/Brewfile on the Mac and is deliberately absent in a
+# codespace (see the Brewfile's comment), so this has to no-op cleanly.
+#
+# Plain --use-on-cd, without modules/core.nix's --version-file-strategy=
+# recursive block: that variant needs the _fnm_autoload_hook rewrite
+# documented in notes/20261017-fnm-node-version.md to stay quiet and to
+# auto-install, which is a lot of zsh-specific machinery for a file that is
+# also a codespace's ~/.zshrc. The default `local` strategy keeps fnm's own
+# "is there a version file right here" guard, so this switches in a project
+# root and says nothing anywhere else. Nothing about `fabrica` depends on
+# it either way: ~/.local/bin/fabrica is a launcher that names its own Node
+# version explicitly (see work/bootstrap.sh), precisely so whatever version
+# this line happens to have activated can never reach it.
+if command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env --use-on-cd --shell zsh)"
+fi
+
 # Guarded, not host-split: rbenv is installed via Brewfile on the Mac and
 # via apt on a codespace (work/codespace-bootstrap.sh) - either way, this
 # no-ops cleanly if it's genuinely missing, same pattern modules/core.nix

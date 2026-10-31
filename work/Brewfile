@@ -4,7 +4,12 @@
 #
 # Also the intent (not the manifest) for the codespace-work path: adding or
 # removing a line here means work/codespace-bootstrap.sh needs the matching
-# apt/npm/release-binary install too - see that file's header comment.
+# apt/npm/release-binary install too - see that file's header comment. `fnm`
+# is the one deliberate exception: it is here only so work/bootstrap.sh can
+# pin the one Node version Fabrica runs on, and the codespace-work posture
+# installs neither Fabrica nor Inspector (a container is where work gets
+# done, not where it gets dispatched from), so there is nothing there for a
+# pinned Node to be pinned for. Don't "fix" that asymmetry.
 #
 # Docker Desktop is deliberately absent and must stay absent: on the work
 # Mac it is distributed through the company's Self-Service app, never
@@ -21,6 +26,7 @@ brew "prettierd"
 brew "ruff"
 brew "neovim"
 brew "node"
+brew "fnm"
 brew "go"
 brew "python@3.13"
 brew "rbenv"

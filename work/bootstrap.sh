@@ -18,29 +18,39 @@
 # the same reason as install_ghostty_symlink: it looks for a macOS .app
 # installed by the company's Self-Service app, and a container has neither.
 #
-# install_fabrica/install_inspector are the exception to that rule: they
-# are plain shell too, and the codespace path still does not call them.
+# install_node_version/install_fabrica/write_fabrica_launcher/
+# install_fabrica_home/check_fabrica_token/install_inspector are the
+# exception to that rule: they are plain shell too (fnm and npm run on a
+# container just as well), and the codespace path still does not call them.
 # A container is a place work gets done, not a place it gets dispatched
 # from or checked, which is the same reason flake.nix leaves
 # modules/fabrica.nix and modules/inspector.nix out of both codespace
-# hosts. Adding them later is two lines in that script's own main().
+# hosts. Adding them later is a few lines in that script's own main().
 set -euo pipefail
 
 # Collected here so the final summary can tell the captain what still
 # needs a human, instead of silently doing nothing.
 #
-# FABRICA_PENDING/INSPECTOR_PENDING/DOCKER_PENDING are read only by this
-# file's own print_summary. work/codespace-bootstrap.sh defines its own
-# print_summary that shadows this one and never installs either tool nor
-# looks for Docker, so sourcing this file leaves it with three counters it
+# Everything from FABRICA_PENDING down is read only by this file's own
+# print_summary. work/codespace-bootstrap.sh defines its own print_summary
+# that shadows this one and installs none of these tools nor looks for
+# Docker, so sourcing this file leaves it with a handful of counters it
 # ignores - deliberately, rather than threading them through the shared
 # print_git_gh_pending, which would put work-Mac-only state into the
 # codespace summary.
+#
+# The last two are the only items in the whole bootstrap that no script is
+# allowed to finish: `claude setup-token` is a browser OAuth flow, and
+# Docker Desktop comes from the company's Self-Service app (see
+# check_docker). Both are reported, never attempted.
 GIT_IDENTITY_PENDING=0
 MACOS_DEFAULTS_PENDING=0
 GH_LOGIN_PENDING=0
 FABRICA_PENDING=0
 INSPECTOR_PENDING=0
+NODE_PIN_PENDING=0
+FABRICA_HOME_PENDING=0
+CLAUDE_TOKEN_PENDING=0
 DOCKER_PENDING=0
 
 # The two repositories this host installs from, and where their binaries
@@ -55,6 +65,19 @@ FABRICA_REPO_URL=https://github.com/inactdev/fabrica.git
 FABRICA_BRANCH=master
 INSPECTOR_PKG_PATH=github.com/inactdev/inspector/cmd/inspector
 MANAGED_PREFIX="$HOME/.local"
+
+# The one Node version Fabrica is supported on, and the only one it is ever
+# run with on this host: install_node_version downloads exactly this through
+# fnm, and write_fabrica_launcher names it in the launcher it generates, so
+# `fabrica` gets it no matter which directory (and therefore which
+# .node-version) the shell is sitting in. Bumping Fabrica's supported Node
+# is this one line plus a re-run of the bootstrap.
+FABRICA_NODE_VERSION=24.18.0
+
+# Fabrica's own state directory. Created by install_fabrica_home, and the
+# only thing in this script that holds a secret (brain.env), which is why
+# its mode is asserted rather than left to whatever umask is in effect.
+FABRICA_HOME="$HOME/.fabrica"
 
 # Where Docker Desktop lands when it is installed from the company's
 # Self-Service app. Not installed by this script (see check_docker and
@@ -184,6 +207,128 @@ configure_git() {
   fi
 }
 
+# Downloads the one Node version Fabrica runs on. `fnm` comes from
+# work/Brewfile, so this runs after install_packages.
+#
+# Gated on a probe rather than run blind, because `fnm install <version>`
+# of an already-installed version exits non-zero ("version already
+# installed") and this script has to stay re-runnable. The probe is
+# `fnm exec --using=<version> node --version` - fnm's own documented way to
+# run one command on one version - rather than a grep of `fnm list`, so
+# what it proves is exactly the command line the generated launcher uses,
+# not merely that some directory exists under fnm's base dir.
+#
+# Like every other install step here, a failure warns and lands in the
+# closing summary instead of aborting: a work Mac with every config linked
+# and every package installed is worth having even if this one download
+# didn't make it.
+install_node_version() {
+  echo "==> installing Node $FABRICA_NODE_VERSION (fnm)"
+  if ! command -v fnm >/dev/null 2>&1; then
+    NODE_PIN_PENDING=1
+    echo "    WARN: fnm is not on PATH, so Node $FABRICA_NODE_VERSION was not installed" >&2
+    return 0
+  fi
+  if fnm exec --using="$FABRICA_NODE_VERSION" node --version >/dev/null 2>&1; then
+    echo "    Node $FABRICA_NODE_VERSION already installed"
+    return 0
+  fi
+  if ! fnm install "$FABRICA_NODE_VERSION"; then
+    NODE_PIN_PENDING=1
+    echo "    WARN: fnm install $FABRICA_NODE_VERSION failed, so Fabrica cannot be" >&2
+    echo "          pinned to it" >&2
+    return 0
+  fi
+  return 0
+}
+
+# Resolves $1 through however many symlinks it takes to name a real file,
+# printing an absolute path with no symlinked or relative components left
+# in it. `readlink -f` (or `realpath`) would be one call and is what a Linux
+# script would reach for, but neither is dependable on a stock macOS: there
+# is no `realpath` at all, and BSD `readlink` only grew `-f` recently
+# enough that an older OS build would silently print an empty line - which,
+# here, would produce a launcher that execs nothing.
+resolve_link() {
+  local path="$1" target dir hops=0
+  while [ -L "$path" ] && [ "$hops" -lt 32 ]; do
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$(dirname "$path")/$target" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  if [ ! -f "$path" ]; then
+    return 1
+  fi
+  dir="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+# Replaces npm's own `fabrica` shim with a launcher that names the Node
+# version to run it on, so a repository's .node-version can never decide
+# which Node Fabrica gets. $1 is the CLI script npm's shim pointed at,
+# resolved by install_fabrica before this overwrote it - npm stays the one
+# authority on where its own package put its entry point, rather than this
+# script guessing at lib/node_modules/fabrica/package.json's bin field.
+#
+# fnm's absolute path is baked in (with a PATH lookup as the fallback)
+# because this launcher must also work where no interactive shell has run:
+# work/zshrc's `fnm env` line is what puts Homebrew's bin dir on PATH for a
+# login shell, and anything launched from a GUI agent or a cron-style job
+# starts without it.
+#
+# Written to a temporary file and moved into place so the switch is atomic.
+# What sits at that path when this runs is npm's own freshly linked shim,
+# which works (just unpinned) - so a `fabrica` half-overwritten in place
+# would be strictly worse than either end state, and `mv` never leaves one.
+write_fabrica_launcher() {
+  local entry="$1"
+  local bin="$MANAGED_PREFIX/bin/fabrica"
+  local fnm_bin tmp
+  fnm_bin="$(command -v fnm 2>/dev/null)" || fnm_bin=""
+
+  if [ -z "$fnm_bin" ] || [ -z "$entry" ]; then
+    NODE_PIN_PENDING=1
+    echo "    WARN: could not pin fabrica to Node $FABRICA_NODE_VERSION" >&2
+    echo "          (fabrica will run on whatever node the shell has)" >&2
+    return 0
+  fi
+
+  tmp="$bin.bootstrap-tmp.$$"
+  cat >"$tmp" <<EOF
+#!/bin/sh
+# Generated by work/bootstrap.sh - do not edit. Every bootstrap and every
+# ./run.sh rebuild on this host rewrites it from scratch.
+#
+# Fabrica runs on exactly Node $FABRICA_NODE_VERSION, from whatever directory it is
+# invoked in: 'fnm exec --using=<version>' picks that version for this one
+# command without touching the shell, so a repository's own .node-version
+# (which fnm's cd hook in work/zshrc does act on) cannot change which Node
+# Fabrica itself gets. It also puts that version first on PATH for
+# everything Fabrica shells out to.
+FNM="$fnm_bin"
+if [ ! -x "\$FNM" ]; then
+  FNM="\$(command -v fnm)" || {
+    echo "fabrica: fnm is not installed, so Node $FABRICA_NODE_VERSION cannot be selected." >&2
+    echo "         Re-run the dotfiles bootstrap: ./run.sh rebuild" >&2
+    exit 127
+  }
+fi
+exec "\$FNM" exec --using=$FABRICA_NODE_VERSION node "$entry" "\$@"
+EOF
+  chmod 755 "$tmp"
+  if ! mv -f "$tmp" "$bin"; then
+    rm -f "$tmp"
+    NODE_PIN_PENDING=1
+    echo "    WARN: could not write $bin, so fabrica is not pinned to Node $FABRICA_NODE_VERSION" >&2
+    return 0
+  fi
+  echo "    fabrica pinned to Node $FABRICA_NODE_VERSION"
+  return 0
+}
+
 # Fabrica, the task orchestrator, installed the three-step way its own
 # README prescribes: a shallow clone of master, `npm pack` inside that
 # clone, then `npm install -g` of the tarball that produced. The same path
@@ -218,7 +363,8 @@ configure_git() {
 # prompt (GitHub accepts no password there anyway), and the low-speed
 # settings so a half-open connection gives up in seconds.
 install_fabrica() {
-  local tmpdir clone_dir candidate
+  local tmpdir clone_dir candidate entry
+  local previous=
   local tarball=
   local count=0
 
@@ -281,16 +427,51 @@ install_fabrica() {
     return 0
   fi
 
+  # The launcher this script generates (see write_fabrica_launcher) lives at
+  # the exact path npm wants to put its own shim, and npm refuses to link a
+  # global bin over a path it doesn't already own: bin-links' check-bin
+  # rejects with "EEXIST: file already exists" for a global, top-level
+  # install unless what's there is a symlink resolving into the package
+  # being installed. Our launcher is a real file, so without this every
+  # re-run after the first would fail the install. `npm install -g --force`
+  # would buy the same single exemption by switching off every other check
+  # npm has, so it isn't used.
+  #
+  # Moved aside rather than deleted, and moved back if the install fails:
+  # before this step existed a failed `npm install -g` simply left the
+  # previous copy alone, and that is still the right outcome on a machine
+  # that is in the middle of real work. A bootstrap killed between the two
+  # moves leaves a `fabrica.pre-bootstrap.*` next to no `fabrica` at all,
+  # which the next run puts right.
+  if [ -e "$MANAGED_PREFIX/bin/fabrica" ] || [ -L "$MANAGED_PREFIX/bin/fabrica" ]; then
+    previous="$MANAGED_PREFIX/bin/fabrica.pre-bootstrap.$$"
+    mv -f "$MANAGED_PREFIX/bin/fabrica" "$previous" || previous=
+  fi
+
   # --prefix: see MANAGED_PREFIX above for why Fabrica goes under
   # ~/.local rather than into npm's own global prefix.
   if ! npm install -g --prefix "$MANAGED_PREFIX" "$tarball"; then
     rm -rf "$tmpdir"
+    if [ -n "$previous" ]; then
+      mv -f "$previous" "$MANAGED_PREFIX/bin/fabrica" || true
+    fi
     FABRICA_PENDING=1
     echo "    WARN: npm install -g of the packed tarball failed, so Fabrica was not installed" >&2
     return 0
   fi
 
   rm -rf "$tmpdir"
+  if [ -n "$previous" ]; then
+    rm -f "$previous"
+  fi
+
+  # Read while npm's shim is still npm's: it names the CLI script, and
+  # resolving it is how the launcher learns what to hand to node. An
+  # unresolvable shim is reported by write_fabrica_launcher rather than
+  # here, which keeps "Fabrica is installed" and "fabrica is pinned to one
+  # Node" as the two separate pending items they are.
+  entry="$(resolve_link "$MANAGED_PREFIX/bin/fabrica")" || entry=""
+  write_fabrica_launcher "$entry"
   return 0
 }
 
@@ -355,6 +536,107 @@ install_inspector() {
   return 0
 }
 
+# Appends one TOML block ($2 onwards, a line each) to the file named by $1,
+# leaving whatever is already in that file exactly as it is: a file that
+# doesn't end in a newline gets one first (otherwise a block header would be
+# glued onto a hand-written last line), and a non-empty file gets a blank
+# separator line. `$(tail -c 1 ...)` is empty precisely when the last byte
+# is a newline, because command substitution strips trailing newlines.
+append_toml_block() {
+  local file="$1"
+  shift
+  if [ -s "$file" ]; then
+    if [ -n "$(tail -c 1 "$file")" ]; then printf '\n' >>"$file"; fi
+    printf '\n' >>"$file"
+  fi
+  printf '%s\n' "$@" >>"$file"
+}
+
+# Fabrica's own state directory, placed so that a fresh work Mac has
+# somewhere for its config and its credential to live without anyone having
+# to know the layout. Strictly additive, in every direction:
+#
+#   - 0700 on the directory and 0600 on brain.env, re-asserted every run:
+#     brain.env is where CLAUDE_CODE_OAUTH_TOKEN goes, and a credential file
+#     left at whatever the umask says is the kind of thing nobody notices
+#     until it matters. Modes are permissions, not content, so asserting
+#     them is not an overwrite.
+#   - brain.env is created only when absent, and never written to. A
+#     bootstrap that truncated it would destroy a working machine's token,
+#     which is the one thing here a human had to do by hand.
+#   - projects.toml grows a [caps] block or a [reader] block only when that
+#     block's header is absent. Existing lines - including different values
+#     inside a block that is already there - are left alone: this reconciles
+#     nothing, it only fills in what was never there. A machine whose caps
+#     have been tuned by hand must survive a re-run unchanged.
+#
+# Every step reports its own failure and returns instead of aborting, like
+# the install steps above: a directory or a mode this script can't set
+# (someone else owns it, a full disk) is a line in the summary, not a reason
+# to abandon a bootstrap that has already linked every config.
+install_fabrica_home() {
+  local toml="$FABRICA_HOME/projects.toml"
+  local env_file="$FABRICA_HOME/brain.env"
+
+  echo "==> preparing $FABRICA_HOME"
+  if ! mkdir -p "$FABRICA_HOME" || ! chmod 700 "$FABRICA_HOME"; then
+    FABRICA_HOME_PENDING=1
+    echo "    WARN: could not create $FABRICA_HOME with mode 700" >&2
+    return 0
+  fi
+
+  if [ ! -e "$env_file" ]; then
+    if : >"$env_file"; then
+      echo "    created an empty brain.env"
+    else
+      FABRICA_HOME_PENDING=1
+      echo "    WARN: could not create $env_file" >&2
+      return 0
+    fi
+  fi
+  # Not fatal, and deliberately not an early return: a brain.env left at the
+  # wrong mode is worth reporting, but projects.toml can still be placed.
+  if ! chmod 600 "$env_file"; then
+    FABRICA_HOME_PENDING=1
+    echo "    WARN: could not set mode 600 on $env_file" >&2
+  fi
+
+  if [ ! -e "$toml" ] && ! : >"$toml"; then
+    FABRICA_HOME_PENDING=1
+    echo "    WARN: could not create $toml" >&2
+    return 0
+  fi
+  if ! grep -q '^[[:space:]]*\[caps\]' "$toml"; then
+    append_toml_block "$toml" '[caps]' 'perTaskUsd = 20' 'perDayUsd = 200'
+    echo "    added the [caps] block to projects.toml"
+  fi
+  if ! grep -q '^[[:space:]]*\[reader\]' "$toml"; then
+    append_toml_block "$toml" '[reader]' 'vendor = "claude-code"' 'model = "sonnet"'
+    echo "    added the [reader] block to projects.toml"
+  fi
+  return 0
+}
+
+# The one credential Fabrica cannot work without, and the one step in this
+# whole bootstrap that a script must not even try: `claude setup-token`
+# opens a browser, logs in as a human, and prints a token. So this only
+# *looks* for the result, exactly like check_docker, and a miss is a line in
+# the closing summary saying what to run and where to put it.
+#
+# The value is never read, printed, or logged - only the presence of a
+# non-empty assignment of the name, with or without a leading `export`.
+check_fabrica_token() {
+  local env_file="$FABRICA_HOME/brain.env"
+  echo "==> checking for Fabrica's Claude Code token"
+  if [ -f "$env_file" ] &&
+    grep -Eq '^[[:space:]]*(export[[:space:]]+)?CLAUDE_CODE_OAUTH_TOKEN[[:space:]]*=[[:space:]]*[^[:space:]]' "$env_file"; then
+    echo "    CLAUDE_CODE_OAUTH_TOKEN already set in brain.env"
+    return 0
+  fi
+  CLAUDE_TOKEN_PENDING=1
+  return 0
+}
+
 # Docker Desktop is the one tool this host needs that Homebrew must not
 # provide: the work Mac gets it from the company's Self-Service app, which
 # installs and updates a managed copy. So this only *looks* for it, and a
@@ -412,14 +694,31 @@ print_summary() {
   echo "==> done"
   if [ "$GIT_IDENTITY_PENDING" = 1 ] || [ "$MACOS_DEFAULTS_PENDING" = 1 ] ||
     [ "$GH_LOGIN_PENDING" = 1 ] || [ "$FABRICA_PENDING" = 1 ] ||
-    [ "$INSPECTOR_PENDING" = 1 ] || [ "$DOCKER_PENDING" = 1 ]; then
+    [ "$INSPECTOR_PENDING" = 1 ] || [ "$DOCKER_PENDING" = 1 ] ||
+    [ "$NODE_PIN_PENDING" = 1 ] || [ "$FABRICA_HOME_PENDING" = 1 ] ||
+    [ "$CLAUDE_TOKEN_PENDING" = 1 ]; then
     echo "Still needs attention:"
     print_git_gh_pending
+    # The two human-only items first: on a machine that installed cleanly
+    # they are the whole list, and they are the only reason the captain has
+    # to read this summary at all.
+    if [ "$CLAUDE_TOKEN_PENDING" = 1 ]; then
+      echo "  - Claude Code token: run 'claude setup-token', then add the token it"
+      echo "      prints to $FABRICA_HOME/brain.env as:"
+      echo "      CLAUDE_CODE_OAUTH_TOKEN=<the token>"
+    fi
     if [ "$DOCKER_PENDING" = 1 ]; then
       echo "  - Docker Desktop: install it from Self-Service (not a Homebrew cask here)"
     fi
     if [ "$FABRICA_PENDING" = 1 ]; then
       echo "  - Fabrica: not installed; see the warning above, then re-run this bootstrap"
+    fi
+    if [ "$NODE_PIN_PENDING" = 1 ]; then
+      echo "  - Node $FABRICA_NODE_VERSION: fabrica is not pinned to it; see the warning"
+      echo "      above, then re-run this bootstrap"
+    fi
+    if [ "$FABRICA_HOME_PENDING" = 1 ]; then
+      echo "  - $FABRICA_HOME: not prepared; see the warning above, then re-run this bootstrap"
     fi
     if [ "$INSPECTOR_PENDING" = 1 ]; then
       echo "  - Inspector: not installed; see the warning above, then re-run this bootstrap"
@@ -448,13 +747,23 @@ main() {
   # GOPRIVATE means it would need them the day that changes). Run any
   # earlier and the first bootstrap of a freshly logged-in machine would
   # fail for no reason but ordering.
+  #
+  # install_node_version before install_fabrica, because the launcher
+  # install_fabrica generates names that Node version - writing a launcher
+  # for a version that isn't downloaded yet would leave a `fabrica` that
+  # fails on its first run instead of one that works.
+  install_node_version
   install_fabrica
   install_inspector
+  install_fabrica_home
   configure_macos_defaults
-  # Last of the real steps: it installs nothing, it only reports, so its
-  # one line belongs next to the summary it feeds rather than up with the
-  # package installs.
+  # Last of the real steps: these two install nothing, they only report
+  # what a human still has to do, so they belong next to the summary they
+  # feed rather than up with the package installs. check_fabrica_token
+  # needs install_fabrica_home to have run first - that is what creates the
+  # brain.env it looks in.
   check_docker
+  check_fabrica_token
   print_summary
 }
 

@@ -1,11 +1,12 @@
 #!/bin/sh
 # Test suite for work/bootstrap.sh (the --no-nix path). Runs the real
-# script against mocked brew/defaults/killall/gh commands on a hermetic
-# PATH and a scratch HOME, so it never touches real Homebrew packages,
-# real macOS defaults, or the real ~/.zshrc / ~/.claude / ~/AGENTS.md -
-# safe to run any time, by anyone, with no side effects outside a temp
-# dir. This does NOT exercise real package installation or a real
-# corporate Mac - see README.md for what still needs the real machine.
+# script against mocked brew/defaults/killall/gh/fnm/node commands on a
+# hermetic PATH and a scratch HOME, so it never touches real Homebrew
+# packages, real macOS defaults, a real fnm's Node downloads, or the real
+# ~/.zshrc / ~/.claude / ~/AGENTS.md / ~/.fabrica - safe to run any time,
+# by anyone, with no side effects outside a temp dir. This does NOT
+# exercise real package installation or a real corporate Mac - see
+# README.md for what still needs the real machine.
 #
 # Usage: sh work/bootstrap.test.sh
 set -eu
@@ -40,6 +41,17 @@ MOCK
   # tarball there, which is what install_fabrica then globs for and
   # installs, so the whole clone -> pack -> install chain is exercised
   # without npm ever running. $FIXTURES/npm_fail makes every call fail.
+  #
+  # `install -g --prefix <p>` reproduces the two things about real npm the
+  # launcher logic depends on: it lays the package down at
+  # <p>/lib/node_modules/fabrica and links <p>/bin/fabrica to it with a
+  # *relative* target (which is what resolve_link has to cope with), and it
+  # refuses with EEXIST when something that isn't its own link is already
+  # sitting at that bin path. That refusal is npm's real behaviour -
+  # bin-links' check-bin.js fails a global, top-level install unless the
+  # existing target resolves into the package being installed - and it is
+  # exactly why work/bootstrap.sh clears the path first. A mock that
+  # silently overwrote would hide the bug that guard prevents.
   cat >"$dir/npm" <<'MOCK'
 #!/bin/sh
 echo "npm $*" >>"$FIXTURES/npm.log"
@@ -57,6 +69,85 @@ if [ "$1" = pack ]; then
   mkdir -p "$dest"
   : >"$dest/fabrica-0.0.0.tgz"
 fi
+if [ "$1" = install ]; then
+  # Fails the install step only, leaving `pack` to succeed - the one way to
+  # reach the "a machine that already had fabrica must keep it" path.
+  if [ -f "$FIXTURES/npm_install_fail" ]; then
+    echo "npm error install of the tarball failed" >&2
+    exit 1
+  fi
+  prefix=
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --prefix ]; then
+      prefix=$2
+    fi
+    shift
+  done
+  if [ -n "$prefix" ]; then
+    if [ -e "$prefix/bin/fabrica" ] && [ ! -L "$prefix/bin/fabrica" ]; then
+      echo "npm error code EEXIST" >&2
+      echo "npm error EEXIST: file already exists" >&2
+      exit 1
+    fi
+    mkdir -p "$prefix/lib/node_modules/fabrica/dist" "$prefix/bin"
+    printf '#!/usr/bin/env node\n' >"$prefix/lib/node_modules/fabrica/dist/cli.js"
+    chmod +x "$prefix/lib/node_modules/fabrica/dist/cli.js"
+    ln -sfn ../lib/node_modules/fabrica/dist/cli.js "$prefix/bin/fabrica"
+  fi
+fi
+exit 0
+MOCK
+  # fnm: faithful enough to make the pinning logic provable, and nothing
+  # more. $FIXTURES/fnm_installed is the list of "downloaded" versions.
+  #   - `install <v>` adds one, and FAILS when it is already there, which
+  #     is what the real fnm does ("version already installed") and the
+  #     reason work/bootstrap.sh probes before installing.
+  #   - `exec --using=<v> <cmd...>` fails when <v> isn't in that list and
+  #     otherwise runs <cmd...>, so the generated launcher can be executed
+  #     for real in a test and asserted on.
+  # $FIXTURES/fnm_install_fail makes the download fail.
+  cat >"$dir/fnm" <<'MOCK'
+#!/bin/sh
+echo "fnm $*" >>"$FIXTURES/fnm.log"
+if [ "$1" = install ]; then
+  if grep -qx "$2" "$FIXTURES/fnm_installed" 2>/dev/null; then
+    echo "error: Version already installed" >&2
+    exit 1
+  fi
+  if [ -f "$FIXTURES/fnm_install_fail" ]; then
+    echo "error: Can't download the requested binary" >&2
+    exit 1
+  fi
+  echo "$2" >>"$FIXTURES/fnm_installed"
+  exit 0
+fi
+if [ "$1" = exec ]; then
+  shift
+  version=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --using=*) version=${1#--using=}; shift ;;
+      --) shift; break ;;
+      -*) shift ;;
+      *) break ;;
+    esac
+  done
+  if ! grep -qx "$version" "$FIXTURES/fnm_installed" 2>/dev/null; then
+    echo "error: Can't find requested version: $version" >&2
+    exit 1
+  fi
+  [ $# -eq 0 ] && exit 0
+  exec "$@"
+fi
+exit 0
+MOCK
+  # node: only ever reached through the fnm mock's exec - by the pinned
+  # version probe and by the generated launcher. Logs its argv so the
+  # launcher can be shown to hand the right script and the right arguments
+  # on, and never runs any real JavaScript.
+  cat >"$dir/node" <<'MOCK'
+#!/bin/sh
+echo "node $*" >>"$FIXTURES/node.log"
 exit 0
 MOCK
   # go: logs every invocation, and `install` drops a stub binary in
@@ -99,7 +190,8 @@ if [ "$1 $2" = "auth setup-git" ]; then
 fi
 exit 0
 MOCK
-  chmod +x "$dir/brew" "$dir/defaults" "$dir/killall" "$dir/gh" "$dir/npm" "$dir/go"
+  chmod +x "$dir/brew" "$dir/defaults" "$dir/killall" "$dir/gh" "$dir/npm" \
+    "$dir/go" "$dir/fnm" "$dir/node"
 }
 
 # git, intercepted for `clone` only. install_fabrica clones a private
@@ -154,6 +246,8 @@ setup() {
   : >"$FIXTURES/go.log"
   : >"$FIXTURES/go.env.log"
   : >"$FIXTURES/git.log"
+  : >"$FIXTURES/fnm.log"
+  : >"$FIXTURES/node.log"
   # jq/ln/mkdir/mv/read etc. come from the real system - none of them are
   # the thing under test and none touch anything outside $HOME. git is the
   # one exception: the real binary is still what runs for everything but
@@ -189,6 +283,26 @@ mock_docker_cli() {
 exit 0
 MOCK
   chmod +x "$MOCK_DIR/docker"
+}
+
+# Runs the generated ~/.local/bin/fabrica launcher the way a shell would,
+# on the same hermetic PATH the bootstrap had - so the fnm it finds is the
+# mock, and the "node" it ends up running is the logging stub.
+run_fabrica_launcher() {
+  FIXTURES="$FIXTURES" PATH="$MOCK_DIR:/usr/bin:/bin" \
+    "$HOME/.local/bin/fabrica" "$@" </dev/null
+}
+
+# Octal mode of $1. `stat` is the one assertion helper here that has to
+# branch on the OS: the suite runs on macOS in CI (BSD stat) and on Linux
+# for anyone checking it locally (GNU stat), and the two spell this
+# differently with no common flag.
+file_mode() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f '%Lp' "$1"
+  else
+    stat -c '%a' "$1"
+  fi
 }
 
 assert_eq() {
@@ -463,12 +577,276 @@ test_fabrica_and_inspector_leave_no_temp_files_on_success() {
   teardown
 }
 
-# node and go are what install_fabrica and install_inspector run; the
-# Brewfile is the only thing that puts them on a work Mac.
+# node and go are what install_fabrica and install_inspector run, and fnm
+# is what pins the Node version `fabrica` itself runs on; the Brewfile is
+# the only thing that puts any of them on a work Mac.
 test_brewfile_provides_node_and_go() {
   setup
   assert_contains "Brewfile installs node" "$(cat "$REPO_DIR/work/Brewfile")" 'brew "node"'
   assert_contains "Brewfile installs go" "$(cat "$REPO_DIR/work/Brewfile")" 'brew "go"'
+  assert_contains "Brewfile installs fnm" "$(cat "$REPO_DIR/work/Brewfile")" 'brew "fnm"'
+  teardown
+}
+
+# work/zshrc is shared verbatim with the codespace-work posture, which has
+# no fnm at all - so the eval has to be guarded, exactly like rbenv's.
+test_zshrc_loads_fnm_guarded() {
+  setup
+  zshrc=$(cat "$REPO_DIR/work/zshrc")
+  # The single quotes are deliberate: this is the literal text expected in
+  # work/zshrc, not an expansion the test wants performed.
+  # shellcheck disable=SC2016
+  assert_contains "zshrc evaluates fnm env" "$zshrc" 'eval "$(fnm env --use-on-cd --shell zsh)"'
+  assert_contains "zshrc guards the fnm eval on fnm being installed" "$zshrc" \
+    'if command -v fnm >/dev/null 2>&1; then'
+  teardown
+}
+
+# --- the pinned Node version -------------------------------------------
+
+test_node_version_installed_through_fnm() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  assert_contains "the pinned Node version is installed with fnm" \
+    "$(cat "$FIXTURES/fnm.log")" "fnm install 24.18.0"
+  teardown
+}
+
+# The whole point of the launcher: `fabrica` names its Node version itself,
+# so no .node-version in whatever directory it is run from can change it.
+test_fabrica_launcher_pins_the_node_version() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  launcher="$HOME/.local/bin/fabrica"
+  if [ -f "$launcher" ] && [ ! -L "$launcher" ] && [ -x "$launcher" ]; then
+    pass_count=$((pass_count + 1)); echo "ok - fabrica is an executable launcher, not npm's shim"
+  else
+    fail_count=$((fail_count + 1)); echo "FAIL - fabrica is an executable launcher, not npm's shim"
+  fi
+  body=$(cat "$launcher")
+  assert_contains "launcher runs the pinned version through fnm exec" "$body" \
+    "exec --using=24.18.0 node"
+  # An absolute path, not npm's relative '../lib/...' link target: the
+  # launcher is run from arbitrary working directories, so a relative entry
+  # point would resolve differently every time. Asserted as "node \"/" plus
+  # the tail of the path rather than against "$HOME/..." because the script
+  # resolves it with `pwd -P`, and on macOS the scratch HOME under
+  # /tmp or /var/folders resolves through a symlink to /private/....
+  assert_contains "launcher execs an absolute path" "$body" 'node "/'
+  assert_contains "launcher execs the CLI npm installed" "$body" \
+    "/.local/lib/node_modules/fabrica/dist/cli.js"
+  case "$body" in
+    *"../lib/node_modules"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - launcher must not carry npm's relative link target"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - launcher carries no relative path"
+      ;;
+  esac
+  teardown
+}
+
+# Executed for real (against the mocked fnm and a logging `node` stub), so
+# this covers the launcher's actual command line and not just its text:
+# right version, right script, and every argument passed through untouched.
+test_fabrica_launcher_runs_and_forwards_arguments() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  : >"$FIXTURES/fnm.log"
+  : >"$FIXTURES/node.log"
+  if run_fabrica_launcher doctor --json >"$TMP/launcher.log" 2>&1; then code=0; else code=$?; fi
+  assert_eq "launcher exits 0" "0" "$code"
+  assert_contains "launcher asks fnm for the pinned version" \
+    "$(cat "$FIXTURES/fnm.log")" "fnm exec --using=24.18.0 node"
+  assert_contains "launcher runs the installed CLI with the arguments it was given" \
+    "$(cat "$FIXTURES/node.log")" "/.local/lib/node_modules/fabrica/dist/cli.js doctor --json"
+  teardown
+}
+
+# Re-running must not try to download a version that is already there
+# (real fnm exits non-zero for that, which is why the script probes first),
+# and the launcher must survive npm's second install - npm refuses to link
+# its shim over a file it doesn't own, so the install clears the path first.
+test_second_run_reuses_the_installed_node_and_relinks_cleanly() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "second run exits 0" "0" "$code"
+  assert_eq "the pinned version is downloaded exactly once" "1" \
+    "$(grep -c 'fnm install 24.18.0' "$FIXTURES/fnm.log" | tr -d ' ')"
+  assert_contains "the second run says it is already installed" "$out" \
+    "Node 24.18.0 already installed"
+  assert_contains "and re-pins the launcher" "$out" "fabrica pinned to Node 24.18.0"
+  assert_eq "the moved-aside previous launcher is cleaned up" "0" \
+    "$(find "$HOME/.local/bin" -name 'fabrica.pre-bootstrap.*' | wc -l | tr -d ' ')"
+  case "$out" in
+    *"EEXIST"* | *"Fabrica: not installed"* | *"not pinned"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - the second npm install must not trip over the launcher:"
+      echo "$out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - the second npm install replaces the launcher cleanly"
+      ;;
+  esac
+  teardown
+}
+
+# The install has to clear the launcher's path before npm runs (npm won't
+# link over a file it doesn't own), which must not cost a working machine
+# the fabrica it already had when that install then fails.
+test_failed_reinstall_restores_the_previous_launcher() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  before=$(cat "$HOME/.local/bin/fabrica")
+  : >"$FIXTURES/npm_install_fail"
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap still exits 0" "0" "$code"
+  assert_contains "summary flags Fabrica as pending" "$out" "Fabrica: not installed"
+  assert_eq "the launcher that was working is still there, unchanged" "$before" \
+    "$(cat "$HOME/.local/bin/fabrica")"
+  assert_eq "and nothing was left moved aside" "0" \
+    "$(find "$HOME/.local/bin" -name 'fabrica.pre-bootstrap.*' | wc -l | tr -d ' ')"
+  teardown
+}
+
+# No fnm, no pin - but Fabrica itself is still installed and still runnable
+# (on whatever node the shell has), and the summary says what is missing.
+test_missing_fnm_warns_and_leaves_npms_own_shim() {
+  setup
+  rm -f "$MOCK_DIR/fnm"
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap still exits 0 without fnm" "0" "$code"
+  assert_contains "says fnm is missing" "$out" "fnm is not on PATH"
+  assert_contains "summary flags the Node pin as pending" "$out" "Node 24.18.0"
+  assert_contains "the rest of the bootstrap still ran" "$out" "applying macOS defaults"
+  if [ -L "$HOME/.local/bin/fabrica" ]; then
+    pass_count=$((pass_count + 1)); echo "ok - npm's own fabrica shim is left in place"
+  else
+    fail_count=$((fail_count + 1)); echo "FAIL - npm's own fabrica shim is left in place"
+  fi
+  teardown
+}
+
+test_fnm_install_failure_warns_and_continues() {
+  setup
+  : >"$FIXTURES/fnm_install_fail"
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap still exits 0 when the Node download fails" "0" "$code"
+  assert_contains "says the fnm install failed" "$out" "fnm install 24.18.0 failed"
+  assert_contains "summary flags the Node pin as pending" "$out" "Node 24.18.0"
+  assert_contains "the rest of the bootstrap still ran" "$out" "applying macOS defaults"
+  teardown
+}
+
+# --- ~/.fabrica ---------------------------------------------------------
+
+test_fabrica_home_is_created_with_tight_modes_and_config() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  assert_eq "the Fabrica home is private to the user" "700" \
+    "$(file_mode "$HOME/.fabrica")"
+  assert_eq "brain.env is created" "" "$(cat "$HOME/.fabrica/brain.env")"
+  assert_eq "brain.env is readable only by the user" "600" \
+    "$(file_mode "$HOME/.fabrica/brain.env")"
+  toml=$(cat "$HOME/.fabrica/projects.toml")
+  assert_contains "projects.toml declares the caps block" "$toml" "[caps]"
+  assert_contains "per-task cap" "$toml" "perTaskUsd = 20"
+  assert_contains "per-day cap" "$toml" "perDayUsd = 200"
+  assert_contains "projects.toml declares the reader block" "$toml" "[reader]"
+  assert_contains "reader vendor" "$toml" 'vendor = "claude-code"'
+  assert_contains "reader model" "$toml" 'model = "sonnet"'
+  teardown
+}
+
+# The invariant that matters most here: this is a bootstrap someone re-runs
+# on a machine that is already working, and brain.env holds the one thing
+# on it that a human had to go and get by hand.
+test_fabrica_home_never_overwrites_existing_content() {
+  setup
+  mkdir -p "$HOME/.fabrica"
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=already-here\n' >"$HOME/.fabrica/brain.env"
+  printf '[caps]\nperTaskUsd = 3\nperDayUsd = 7\n' >"$HOME/.fabrica/projects.toml"
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  assert_eq "brain.env is left exactly as it was" "CLAUDE_CODE_OAUTH_TOKEN=already-here" \
+    "$(cat "$HOME/.fabrica/brain.env")"
+  # Content is never touched; the mode is, every run - a credential file
+  # left world-readable is the kind of thing nobody notices until it counts.
+  assert_eq "an existing brain.env's mode is tightened anyway" "600" \
+    "$(file_mode "$HOME/.fabrica/brain.env")"
+  toml=$(cat "$HOME/.fabrica/projects.toml")
+  assert_contains "hand-tuned caps are untouched" "$toml" "perTaskUsd = 3"
+  case "$toml" in
+    *"perTaskUsd = 20"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - an existing [caps] block must not be re-written with our defaults"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - an existing [caps] block is left alone"
+      ;;
+  esac
+  assert_eq "only one [caps] block" "1" "$(grep -c '^\[caps\]' "$HOME/.fabrica/projects.toml" | tr -d ' ')"
+  assert_contains "the missing [reader] block is appended" "$toml" "[reader]"
+  assert_contains "with its values" "$toml" 'vendor = "claude-code"'
+  teardown
+}
+
+# A projects.toml someone edited by hand may well not end in a newline;
+# appending to it must not glue [reader] onto that last line.
+test_fabrica_home_append_survives_a_missing_trailing_newline() {
+  setup
+  mkdir -p "$HOME/.fabrica"
+  printf '[caps]\nperTaskUsd = 3' >"$HOME/.fabrica/projects.toml"
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  assert_eq "the appended block starts on a line of its own" "1" \
+    "$(grep -c '^\[reader\]' "$HOME/.fabrica/projects.toml" | tr -d ' ')"
+  assert_eq "and the last hand-written line is intact" "1" \
+    "$(grep -c '^perTaskUsd = 3$' "$HOME/.fabrica/projects.toml" | tr -d ' ')"
+  teardown
+}
+
+# --- the two steps only a human can take --------------------------------
+
+test_claude_token_is_reported_as_pending_when_absent() {
+  setup
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "a missing token is pending, not a failure" "0" "$code"
+  assert_contains "summary names the command to run" "$out" "claude setup-token"
+  assert_contains "and the variable to set" "$out" "CLAUDE_CODE_OAUTH_TOKEN="
+  assert_contains "and the file to put it in" "$out" "/.fabrica/brain.env"
+  teardown
+}
+
+test_claude_token_already_set_is_not_pending_and_never_printed() {
+  setup
+  mkdir -p "$HOME/.fabrica"
+  printf 'export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-not-a-real-token\n' >"$HOME/.fabrica/brain.env"
+  out=$(run_bootstrap 2>&1) || true
+  case "$out" in
+    *"claude setup-token"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - an already-set token must not be flagged pending"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - an already-set token is not flagged pending"
+      ;;
+  esac
+  # The check reads brain.env; it must never echo what it finds there.
+  case "$out" in
+    *"sk-ant-not-a-real-token"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - the token value must never appear in bootstrap output"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - the token value never appears in output"
+      ;;
+  esac
   teardown
 }
 
@@ -581,6 +959,7 @@ test_existing_git_identity_is_preserved_and_not_pending
 test_macos_defaults_failure_warns_and_continues
 test_brew_bundle_invoked_with_work_brewfile
 test_brewfile_provides_node_and_go
+test_zshrc_loads_fnm_guarded
 test_brewfile_does_not_install_docker_desktop
 test_docker_present_is_not_flagged_pending
 test_docker_missing_is_pending_not_a_failure
@@ -592,6 +971,18 @@ test_fabrica_clone_failure_warns_and_continues
 test_fabrica_npm_failure_warns_and_continues
 test_inspector_failure_warns_and_continues
 test_fabrica_and_inspector_leave_no_temp_files_on_success
+test_node_version_installed_through_fnm
+test_fabrica_launcher_pins_the_node_version
+test_fabrica_launcher_runs_and_forwards_arguments
+test_second_run_reuses_the_installed_node_and_relinks_cleanly
+test_failed_reinstall_restores_the_previous_launcher
+test_missing_fnm_warns_and_leaves_npms_own_shim
+test_fnm_install_failure_warns_and_continues
+test_fabrica_home_is_created_with_tight_modes_and_config
+test_fabrica_home_never_overwrites_existing_content
+test_fabrica_home_append_survives_a_missing_trailing_newline
+test_claude_token_is_reported_as_pending_when_absent
+test_claude_token_already_set_is_not_pending_and_never_printed
 test_idempotent_rerun
 
 echo ""

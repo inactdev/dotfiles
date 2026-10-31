@@ -15,8 +15,10 @@ remembered yet, it asks once whether this is a home or work computer and
 remembers the answer for next time (`./run.sh choose` to change it later,
 `./run.sh plan` to preview changes, `./run.sh rebuild` to re-apply after
 editing a tracked config file). To skip the menu, pass a host and/or
-`--no-nix` explicitly. Full details, including exactly how host selection
-works: `./run.sh help`.
+`--no-nix` explicitly - a host named on the command line is remembered
+exactly like a menu answer, so `./run.sh bootstrap work` once is enough and
+every `./run.sh rebuild` after it needs no host and no flag. Full details,
+including exactly how host selection works: `./run.sh help`.
 
 ## Home hosts (Nix)
 
@@ -455,7 +457,8 @@ Nix, no home-manager. Everything for that path lives under `work/`:
 - `work/Brewfile` - the exact formula/cask list for the work host, and the
   intent Codespaces' work posture mirrors via apt/npm/release binaries
   (below). Docker Desktop is deliberately *not* in it - see "Docker
-  Desktop" below.
+  Desktop" below. `fnm` is the one entry Codespaces deliberately does not
+  mirror - see "Node for Fabrica" below.
 - `work/bootstrap.sh` - installs Homebrew if missing, runs `brew bundle`,
   symlinks the same `home/.config/*` and `AGENTS.md` files the Nix path
   uses plus ghostty (no wezterm/herdr - see below), links `work/zshrc` and
@@ -463,8 +466,9 @@ Nix, no home-manager. Everything for that path lives under `work/`:
   prompted for, never defaulted), and applies the macOS `defaults` the Nix
   path also sets. Idempotent - safe to re-run any time, including via
   `./run.sh rebuild` once `work` is the remembered/chosen host. It also
-  installs Fabrica and Inspector, and checks for Docker Desktop without
-  installing it (both see below).
+  installs Fabrica and Inspector, pins the Node version Fabrica runs on,
+  places `~/.fabrica`, and checks for Docker Desktop and Fabrica's Claude
+  Code token without installing or fetching either (all see below).
   Everything in it except the Homebrew/`brew bundle` install step, the
   macOS `defaults`, and the Fabrica/Inspector steps is plain shell with
   nothing macOS-specific about it, and is sourced (not copied) by
@@ -536,6 +540,50 @@ codespace hosts are left out of `modules/fabrica.nix`/`modules/inspector.nix`:
 a container is a place work gets done, not a place it gets dispatched from
 or checked.
 
+### Node for Fabrica, and `~/.fabrica`
+
+Fabrica runs on exactly one Node version (24.18.0 today, one constant at
+the top of `work/bootstrap.sh`), and it has to get that version no matter
+which directory it is started in - a repository that declares its own
+`.node-version` must not change what the orchestrator itself runs on. So:
+
+- `fnm` comes from `work/Brewfile`, and the bootstrap installs that one
+  version through it (skipping the download when it is already there).
+- `~/.local/bin/fabrica` is not npm's own shim but a generated launcher
+  that ends in `fnm exec --using=<version> node <the installed CLI>`. The
+  version is named in the launcher, so nothing about the current directory
+  or the shell's active Node can reach it - and because `fnm exec` also
+  puts that version first on `PATH`, anything Fabrica shells out to gets it
+  too. Every bootstrap/rebuild regenerates the launcher; the install clears
+  the path first, because npm refuses to link its own shim over a file it
+  doesn't own.
+- `work/zshrc` loads fnm (`fnm env --use-on-cd`, guarded on fnm being
+  installed) so ordinary per-project switching works on the work Mac the
+  way it does on the Nix hosts. It is deliberately the plain form, not
+  `modules/core.nix`'s recursive-lookup variant - see
+  `notes/20261030-work-host-fabrica-ready.md`.
+- Codespaces' work posture gets none of this and needs none of it: it
+  installs neither Fabrica nor Inspector, so there is nothing there for a
+  pinned Node to be pinned for. `work/zshrc` is shared verbatim and no-ops
+  cleanly where fnm is absent.
+
+The bootstrap also places Fabrica's own state directory, additively and
+never destructively: `~/.fabrica` (mode 700), an empty `brain.env` (mode
+600) created only when absent, and a `projects.toml` that grows a `[caps]`
+block (`perTaskUsd = 20`, `perDayUsd = 200`) and a `[reader]` block
+(`vendor = "claude-code"`, `model = "sonnet"`) only when that block's
+header isn't there. Values already in the file - including caps tuned by
+hand - are left exactly as they are; this fills gaps, it does not
+reconcile.
+
+`brain.env` is also where Fabrica's Claude Code credential goes, and
+getting it is a browser login no script may drive. So the bootstrap only
+*looks* for a `CLAUDE_CODE_OAUTH_TOKEN` assignment in that file (never
+reading or printing the value) and, when it isn't there, the closing
+summary says to run `claude setup-token` and where to put what it prints.
+Together with Docker Desktop below, that is the whole list of things a
+fresh work Mac still needs a human for after one bootstrap run.
+
 ### Docker Desktop
 
 Docker is installed on the work Mac through the company's Self-Service
@@ -561,9 +609,13 @@ Deliberately excluded from the work host, by captain decision:
 wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
 imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
-The bootstrap ends with a short summary of anything it couldn't finish
-(GitHub login, MDM-locked macOS settings, a still-unset git identity, a
-Fabrica or Inspector install that didn't land, a missing Docker Desktop).
+The bootstrap ends with a short summary of anything it couldn't finish,
+with the two human-only steps first (Fabrica's Claude Code token, a missing
+Docker Desktop), followed by anything that genuinely went wrong: GitHub
+login, MDM-locked macOS settings, a still-unset git identity, a Fabrica or
+Inspector install that didn't land, a Node version that didn't download or
+a `fabrica` that couldn't be pinned to it, a `~/.fabrica` that couldn't be
+created.
 
 ## GitHub Codespaces
 

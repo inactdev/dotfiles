@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # Test suite for run.sh's host-resolution logic (the home/work menu, the
-# uname-based mac-vs-linux auto-detect, the work-has-no-linux-host guards)
+# uname-based mac-vs-linux auto-detect, the work-has-no-linux-host guards,
+# and what gets written to the remembered-host marker - including from an
+# explicitly named host, which is remembered exactly like a menu answer),
 # its switcher command lines (which host branches to home-manager vs.
 # darwin-rebuild, and that the home-linux branch carries `-b hm-backup`
-# ahead of `switch`), and its two ~/.dotfiles symlink guards: validate_dir (run.sh:4, aborts on
-# an unresolvable/non-repo DIR) and link_dotfiles (run.sh:164/260, refuses
-# to silently repoint an existing ~/.dotfiles - see issue #9). Sources the
-# real run.sh (see the BASH_SOURCE guard at its tail) and calls its
-# functions directly against a mocked `uname` on a hermetic PATH and a
-# scratch marker file/HOME - never touches real Nix, Homebrew, or this
-# machine's actual ~/.dotfiles. Does NOT exercise a real bootstrap; see
-# work/bootstrap.test.sh for that path's coverage.
+# ahead of `switch`), and its two ~/.dotfiles symlink guards: validate_dir
+# (near the top of run.sh, aborts on an unresolvable/non-repo DIR) and
+# link_dotfiles (refuses to silently repoint an existing ~/.dotfiles - see
+# issue #9). Sources the real run.sh (see the BASH_SOURCE guard at its
+# tail) and calls its functions directly against a mocked `uname` on a
+# hermetic PATH and a scratch marker file/HOME - never touches real Nix,
+# Homebrew, this machine's actual ~/.dotfiles, or the remembered host of
+# the checkout it is run from (see run_script_sandboxed). Does NOT exercise
+# a real bootstrap; see work/bootstrap.test.sh for that path's coverage.
 #
 # Usage: bash run.test.sh
 set -uo pipefail
@@ -89,17 +92,47 @@ run_choose_host() {
 # resolve_host as a plain command, so a non-zero return there kills the whole
 # CLI silently. Capturing it here (rather than letting the caller's `|| true`
 # swallow it) is what makes that regression visible.
+#
+# $2, when given, mocks `uname -s`: resolve_host consults it to decide
+# whether the host it just resolved is one worth remembering (work exists on
+# Darwin only), so a test about the marker must not depend on which kind of
+# machine the suite happens to run on.
 run_resolve_host() {
-  local requested=$1
+  local requested=$1 platform=${2:-}
+  if [ -n "$platform" ]; then mock_uname "$MOCK_DIR" "$platform"; fi
   (
     # shellcheck disable=SC1090
     source "$SCRIPT"
     # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
     MARKER="$TMP/.dotfiles-host"
+    # shellcheck disable=SC2030,SC2031
+    PATH="$MOCK_DIR:$PATH"
     rc=0
     resolve_host "$requested" "0" "0" || rc=$?
     echo "HOST=$HOST RESOLVED_NO_NIX=$RESOLVED_NO_NIX rc=$rc"
   )
+}
+
+# Same, for the bare `--no-nix` form (no host named at all), which resolves
+# to work and must be remembered the same way.
+run_resolve_host_no_nix() {
+  local platform=$1
+  mock_uname "$MOCK_DIR" "$platform"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
+    MARKER="$TMP/.dotfiles-host"
+    # shellcheck disable=SC2030,SC2031
+    PATH="$MOCK_DIR:$PATH"
+    rc=0
+    resolve_host "" "1" "0" || rc=$?
+    echo "HOST=$HOST RESOLVED_NO_NIX=$RESOLVED_NO_NIX rc=$rc"
+  )
+}
+
+marker_contents() {
+  cat "$TMP/.dotfiles-host" 2>/dev/null || true
 }
 
 test_home_menu_answer_picks_personal_mac_on_darwin() {
@@ -179,6 +212,98 @@ test_explicit_work_host_implies_no_nix() {
   out=$(run_resolve_host "work" 2>&1) || true
   assert_contains "explicit work implies --no-nix" "$out" "HOST=work RESOLVED_NO_NIX=1"
   assert_contains "explicit work resolve_host succeeds" "$out" "rc=0"
+  teardown
+}
+
+# A host named on the command line is a statement about the machine, same as
+# a menu answer - so `./run.sh bootstrap work` once must be enough, and every
+# later flagless ./run.sh must resolve to work on its own.
+test_explicit_work_host_is_remembered() {
+  setup
+  out=$(run_resolve_host "work" "Darwin" 2>&1) || true
+  assert_contains "explicit work says it remembered the choice" "$out" "remembered 'work'"
+  assert_eq "marker remembers work/no-nix" "work
+no-nix" "$(marker_contents)"
+  teardown
+}
+
+test_explicit_nix_host_is_remembered() {
+  setup
+  out=$(run_resolve_host "personal-mac" "Darwin" 2>&1) || true
+  assert_contains "explicit personal-mac says it remembered the choice" "$out" \
+    "remembered 'personal-mac'"
+  assert_eq "marker remembers personal-mac/nix" "personal-mac
+nix" "$(marker_contents)"
+  teardown
+}
+
+test_bare_no_nix_flag_is_remembered_as_work() {
+  setup
+  out=$(run_resolve_host_no_nix "Darwin" 2>&1) || true
+  assert_contains "--no-nix alone resolves to work" "$out" "HOST=work RESOLVED_NO_NIX=1"
+  assert_eq "marker remembers work/no-nix" "work
+no-nix" "$(marker_contents)"
+  teardown
+}
+
+# The one combination that must never be recorded: cmd_bootstrap_no_nix
+# rejects work on Linux moments later, so remembering it would leave every
+# later flagless ./run.sh resolving to a host that can only fail. choose_host
+# already refuses to write the marker for the same answer from the menu
+# (test_work_menu_answer_fails_clearly_on_linux).
+test_explicit_work_host_on_linux_is_not_remembered() {
+  setup
+  run_resolve_host "work" "Linux" >/dev/null 2>&1 || true
+  if [ -e "$TMP/.dotfiles-host" ]; then
+    fail_count=$((fail_count + 1))
+    echo "FAIL - work on Linux must not be remembered (there is no work-linux host)"
+  else
+    pass_count=$((pass_count + 1))
+    echo "ok - work on Linux is not remembered"
+  fi
+  teardown
+}
+
+# Re-running with the same explicit host must stay quiet: ./run.sh rebuild
+# work would otherwise print "remembered 'work'" on every single run.
+test_remembering_the_same_host_again_is_silent() {
+  setup
+  run_resolve_host "work" "Darwin" >/dev/null 2>&1 || true
+  out=$(run_resolve_host "work" "Darwin" 2>&1) || true
+  case "$out" in
+    *remembered*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - an unchanged remembered host must not be re-announced: $out"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - an unchanged remembered host is not re-announced"
+      ;;
+  esac
+  assert_eq "and the marker still says work/no-nix" "work
+no-nix" "$(marker_contents)"
+  teardown
+}
+
+# Remembering is a convenience, never a reason to fail a command the user
+# asked for: a checkout whose marker can't be written must still bootstrap.
+test_unwritable_marker_warns_but_resolves() {
+  setup
+  mkdir -p "$TMP/readonly"
+  mock_uname "$MOCK_DIR" "Darwin"
+  out=$( (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    # shellcheck disable=SC2034 # read by resolve_host, sourced dynamically above
+    MARKER="$TMP/readonly/nonexistent-dir/.dotfiles-host"
+    # shellcheck disable=SC2030,SC2031
+    PATH="$MOCK_DIR:$PATH"
+    rc=0
+    resolve_host "work" "0" "0" || rc=$?
+    echo "HOST=$HOST rc=$rc"
+  ) 2>&1 )
+  assert_contains "an unwritable marker still resolves the host" "$out" "HOST=work rc=0"
+  assert_contains "and says it couldn't remember it" "$out" "isn't remembered"
   teardown
 }
 
@@ -408,7 +533,7 @@ test_plan_personal_mac_still_builds_the_darwin_system() {
   teardown
 }
 
-# --- validate_dir (run.sh:4) -----------------------------------------------
+# --- validate_dir (run.sh's DIR computation) -------------------------------
 # DIR is computed at the top of run.sh, unconditionally, every time the file
 # is sourced or run - so these tests can't just source-then-call like the
 # functions above. Instead they override `cd`/`dirname` as shell functions
@@ -462,7 +587,7 @@ test_dir_resolving_outside_repo_aborts_before_any_write() {
   teardown
 }
 
-# --- link_dotfiles (run.sh:164, run.sh:260) --------------------------------
+# --- link_dotfiles (called by cmd_bootstrap_nix and cmd_rebuild) -----------
 
 run_link_dotfiles() {
   local target=$1 relink=$2 home=$3
@@ -627,10 +752,17 @@ test_link_dotfiles_refuses_real_file_even_with_relink() {
 # very `set -e` these tests exist to prove. A fresh `bash run.sh` gets its own
 # clean set -e state, so this is also the only assertion here that exercises
 # run.sh exactly as a user invokes it, argv parsing included.
+# DOTFILES_HOST_MARKER points the remembered-host marker at scratch. It has
+# to be set here and nowhere else: this helper runs the real script, which
+# computes MARKER from its own directory, so without the override every one
+# of these tests would rewrite the remembered host of the checkout the suite
+# is being run from - which on the owner's own machine is the live
+# ~/.dotfiles.
 run_script_sandboxed() {
   mock_switchers "$MOCK_DIR"
   # shellcheck disable=SC2031 # this shell's PATH is untouched; the mock is scoped to the child
-  HOME="$TMP/home" PATH="$MOCK_DIR:$PATH" bash "$SCRIPT" "$@" >/dev/null 2>&1
+  HOME="$TMP/home" PATH="$MOCK_DIR:$PATH" DOTFILES_HOST_MARKER="$TMP/.dotfiles-host" \
+    bash "$SCRIPT" "$@" >/dev/null 2>&1
   echo "rc=$?"
   cat "$TMP/invoked.log"
 }
@@ -672,6 +804,22 @@ test_bootstrap_creates_symlink_and_reaches_switcher_when_absent() {
   teardown
 }
 
+# The whole point of remembering, end to end through the real script: name
+# the host once, then never again. Asserted on the argv the second,
+# host-less invocation reaches, not merely on the marker's contents.
+test_explicit_host_is_remembered_for_the_next_run_end_to_end() {
+  setup
+  mkdir -p "$TMP/home"
+  run_script_sandboxed bootstrap personal-mac >/dev/null
+  assert_eq "the explicit host was written to the marker" "personal-mac
+nix" "$(marker_contents)"
+  out=$(run_script_sandboxed rebuild)
+  assert_contains "a later host-less rebuild succeeds" "$out" "rc=0"
+  assert_contains "and targets the remembered host with no flag" "$out" \
+    ".dotfiles#personal-mac"
+  teardown
+}
+
 test_relink_flag_repoints_symlink_end_to_end() {
   setup
   mkdir -p "$TMP/home" "$TMP/other-target"
@@ -707,6 +855,12 @@ test_explicit_work_host_on_linux_is_rejected_by_bootstrap_no_nix
 test_explicit_home_linux_host_still_resolves_to_home_linux
 test_explicit_personal_mac_host_still_resolves_to_personal_mac
 test_explicit_work_host_implies_no_nix
+test_explicit_work_host_is_remembered
+test_explicit_nix_host_is_remembered
+test_bare_no_nix_flag_is_remembered_as_work
+test_explicit_work_host_on_linux_is_not_remembered
+test_remembering_the_same_host_again_is_silent
+test_unwritable_marker_warns_but_resolves
 test_rebuild_home_linux_uses_home_manager_not_darwin_rebuild
 test_rebuild_personal_mac_still_uses_darwin_rebuild
 test_rebuild_home_linux_passes_backup_extension_before_switch
@@ -731,6 +885,7 @@ test_link_dotfiles_refuses_real_file_even_with_relink
 test_rebuild_refusal_aborts_before_any_switcher_runs
 test_bootstrap_refusal_aborts_before_any_switcher_runs
 test_bootstrap_creates_symlink_and_reaches_switcher_when_absent
+test_explicit_host_is_remembered_for_the_next_run_end_to_end
 test_relink_flag_repoints_symlink_end_to_end
 
 echo ""

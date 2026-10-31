@@ -2,7 +2,13 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || DIR=""
-MARKER="$DIR/.dotfiles-host"
+# Where the remembered host choice lives: gitignored, one per clone.
+# Overridable solely so run.test.sh can point it at a scratch file when it
+# runs this script end to end (same reason work/bootstrap.sh's DOCKER_APP
+# is); nothing in normal use sets it. Without that knob, every end-to-end
+# test would rewrite the remembered host of whatever checkout the suite was
+# run from - which on the owner's own machine is the live ~/.dotfiles.
+MARKER="${DOTFILES_HOST_MARKER:-$DIR/.dotfiles-host}"
 
 # Refuses to continue if $dir isn't a real path to this repo checkout. DIR
 # can resolve empty (or to a stale/unrelated path) when run.sh's own
@@ -60,7 +66,10 @@ PICKING A HOST
        waiting on a prompt in a non-interactive session.
   Re-ask any time with: ./run.sh choose
   Skip the menu any time by passing a host and/or --no-nix explicitly -
-  this is also the only way to drive the (planned) ci host.
+  this is also the only way to drive the (planned) ci host. A host named
+  on the command line is remembered exactly like a menu answer, so you
+  only have to name it once: ./run.sh bootstrap work, then plain
+  ./run.sh rebuild from then on.
 
 COMMANDS
   bootstrap [host]   First-time setup on a new machine. Safe to re-run
@@ -86,6 +95,49 @@ FLAGS
                      that is a real file or directory is always refused,
                      --relink included - move it by hand first.
 EOF
+}
+
+# Writes the remembered host/flavour to $MARKER (gitignored, per-clone), so
+# the next run needs neither a flag nor the menu. Shared by choose_host and
+# by resolve_host's explicit-host paths - naming a host on the command line
+# is a statement about the machine, same as answering the menu, so both
+# record it the same way and through the same code.
+#
+# Silent when the marker already holds exactly this answer: ./run.sh rebuild
+# work would otherwise print "remembered 'work'" on every single run. A
+# marker that can't be written warns and carries on rather than failing the
+# command - remembering is a convenience, and a checkout that can't be
+# written to must still be able to bootstrap (this is called under set -e,
+# so an unguarded redirect would abort the whole run).
+remember_host() {
+  local host="$1" no_nix="$2" flavour="nix" wanted
+  if [ "$no_nix" = 1 ]; then flavour="no-nix"; fi
+  wanted="$host
+$flavour"
+  if [ -f "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$wanted" ]; then
+    return 0
+  fi
+  # 2>/dev/null before the > on purpose: redirections are applied in order,
+  # so with it second the shell's own "No such file or directory" for the
+  # failing write escapes and is printed alongside our own NOTE below.
+  if ! printf '%s\n' "$wanted" 2>/dev/null > "$MARKER"; then
+    echo "    NOTE: couldn't write $MARKER, so '$host' isn't remembered" >&2
+    return 0
+  fi
+  echo "    remembered '$host' for this machine (re-choose with ./run.sh choose)"
+}
+
+# remember_host for a host resolved from the command line, minus the one
+# combination that must never be recorded: `work` on Linux. There is no
+# work-linux host, so cmd_bootstrap_no_nix rejects it moments after
+# resolution - recording it would leave every later flagless ./run.sh
+# resolving to a host that can only fail, and choose_host already refuses to
+# write the marker for exactly that answer when it comes from the menu.
+remember_resolved_host() {
+  if [ "$HOST" = "work" ] && [ "$(uname -s)" = "Linux" ]; then
+    return 0
+  fi
+  remember_host "$HOST" "$RESOLVED_NO_NIX"
 }
 
 choose_host() {
@@ -123,15 +175,15 @@ choose_host() {
       ;;
     *) echo "Not a valid choice." >&2; exit 1 ;;
   esac
-  {
-    echo "$HOST"
-    if [ "$RESOLVED_NO_NIX" = 1 ]; then echo "no-nix"; else echo "nix"; fi
-  } > "$MARKER"
-  echo "    remembered '$HOST' for this machine (re-choose with ./run.sh choose)"
+  remember_host "$HOST" "$RESOLVED_NO_NIX"
 }
 
 # Sets HOST and RESOLVED_NO_NIX (0/1) from, in order: explicit args, the
-# remembered marker, or (if allowed and interactive) the menu.
+# remembered marker, or (if allowed and interactive) the menu. Both explicit
+# paths also *record* what they resolved (see remember_host), so one
+# `./run.sh bootstrap work` is enough and every later `./run.sh rebuild`
+# needs no host and no flag - the same deal a menu answer has always given.
+# Done here rather than in cmd_bootstrap so plan/rebuild/bootstrap all agree.
 resolve_host() {
   local explicit_host="$1" explicit_no_nix="$2" allow_menu="$3"
 
@@ -141,12 +193,14 @@ resolve_host() {
     # "work" only exists as a --no-nix host today; treat it as such even
     # if --no-nix wasn't repeated on the command line.
     if [ "$HOST" = "work" ]; then RESOLVED_NO_NIX=1; fi
+    remember_resolved_host
     return 0
   fi
 
   if [ "$explicit_no_nix" = 1 ]; then
     HOST="work"
     RESOLVED_NO_NIX=1
+    remember_resolved_host
     return 0
   fi
 
