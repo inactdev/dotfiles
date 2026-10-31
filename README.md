@@ -749,3 +749,5 @@ opened for it will clone this repo and run `install.sh` on creation.
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
 The hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
+
+`./check.sh` is the local half of that floor - the one command Inspector runs, and the one to run by hand before pushing. It is shellcheck, `nixfmt --check` over every tracked `.nix` file, and the hermetic suites. `nixfmt` has to be on PATH: it is on every Nix-managed host via `modules/core.nix` and in Inspector's own image via `Dockerfile.inspector`, and anywhere else `nix shell nixpkgs#nixfmt` puts it there. A missing formatter is a failure rather than a skipped step, so that "nothing to format" and "no formatter" can never look alike.
