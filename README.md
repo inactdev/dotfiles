@@ -129,11 +129,22 @@ symptom is `fabrica doctor` refusing to work afterwards. Cloning first
 gives that build step a real repository to read, and the tarball installs
 like any other package.
 
-Two details worth knowing:
+Three details worth knowing:
 
 - **It never fails a switch.** Offline, rate-limited, or without
   credentials for the repo, the step prints a warning saying the
   installed copy was left alone and activation carries on.
+- **`fabrica` is pinned to one Node version,** the one in
+  `./fabrica-node-version` that the work Mac uses too (see "Node for
+  Fabrica" below for the file and why there is only one of it). The step
+  installs that version through `fnm` when fnm hasn't got it, then replaces
+  npm's own `fabrica` shim with a launcher ending in `fnm exec
+  --using=<version> node <the installed CLI>` - so a repository that
+  declares its own `.node-version` cannot change what the orchestrator
+  itself runs on, and `fnm exec` puts that version first on `PATH` for
+  anything Fabrica shells out to. That half runs on *every* activation,
+  including the ones that install nothing: `fabrica update` is an
+  `npm install -g`, which puts npm's unpinned shim back.
 - **The install is in `~/.npm-global`,** which `home.sessionPath` puts on
   PATH, rather than in npm's own default global prefix. On a Nix host that
   default is the read-only `nodejs` store path, where `npm install -g`
@@ -590,10 +601,19 @@ or checked.
 
 ### Node for Fabrica, and `~/.fabrica`
 
-Fabrica runs on exactly one Node version (24.18.0 today, one constant at
-the top of `work/bootstrap.sh`), and it has to get that version no matter
-which directory it is started in - a repository that declares its own
-`.node-version` must not change what the orchestrator itself runs on. So:
+Fabrica runs on exactly one Node version (24.18.0 today), and it has to get
+that version no matter which directory it is started in - a repository that
+declares its own `.node-version` must not change what the orchestrator
+itself runs on.
+
+That version is declared once, in **`./fabrica-node-version`** at the
+repository root - one line, nothing else in the file. `work/bootstrap.sh`
+reads it at load time for this host, and `modules/fabrica.nix` reads the
+same file with `builtins.readFile` for `personal-mac` and `home-linux`
+(see "Fabrica" above). Bumping Fabrica's supported Node is that one file,
+plus a bootstrap here and a switch on each Nix host; nothing carries a
+second copy of the number, and `work/bootstrap.test.sh` asserts that no
+copy appears on either side. On the work Mac:
 
 - `fnm` comes from `work/Brewfile`, and the bootstrap installs that one
   version through it (skipping the download when it is already there).
@@ -614,6 +634,16 @@ which directory it is started in - a repository that declares its own
   installs neither Fabrica nor Inspector, so there is nothing there for a
   pinned Node to be pinned for. `work/zshrc` is shared verbatim and no-ops
   cleanly where fnm is absent.
+
+The Nix hosts do the same thing from the same pin - `fnm` comes from
+`modules/core.nix` instead of the Brewfile, and the launcher is written by
+`modules/fabrica-sync.sh` on every activation instead of by a bootstrap -
+with one deliberate difference: there, the launcher is written only after
+`fnm exec --using=<version>` has been shown to work. A bootstrap is a
+command someone ran and is watching, so it writes the launcher either way
+and reports a failed download as a pending item; an activation is not
+watched, and a launcher naming a version fnm hasn't got would turn a
+working `fabrica` into one that cannot start at all.
 
 The bootstrap also places Fabrica's own state directory, additively and
 never destructively: `~/.fabrica` (mode 700), an empty `brain.env` (mode
@@ -735,7 +765,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 ## Tests
 
 - `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`, and that a successful rebuild records the commit it applied where the self-update job reads it.
-- `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh`/`npm`/`go` on a hermetic `$HOME`, plus a `git` that is real for everything except `clone` (so the Fabrica install's clone of a private repository is exercised without ever reaching the network). Covers the clone/pack/`npm install -g` chain, the `go install ...@latest` command and the environment it runs under, the fact that npm is never handed a `github:` spec, and that a refused clone, a failing `npm` or a failing `go` each warn, report themselves in the summary, clean up their temp directory and still leave the bootstrap exiting 0.
+- `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh`/`npm`/`go` on a hermetic `$HOME`, plus a `git` that is real for everything except `clone` (so the Fabrica install's clone of a private repository is exercised without ever reaching the network). Covers the clone/pack/`npm install -g` chain, the `go install ...@latest` command and the environment it runs under, the fact that npm is never handed a `github:` spec, and that a refused clone, a failing `npm` or a failing `go` each warn, report themselves in the summary, clean up their temp directory and still leave the bootstrap exiting 0. It also owns the Node pin: every version assertion reads `./fabrica-node-version`, and it asserts that neither `work/bootstrap.sh` nor the Nix side (`modules/fabrica.nix`, `modules/fabrica-sync.sh`) carries a second copy of the number.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash modules/inkwell-sync.test.sh` - the Inkwell backend's build and agent decisions: already-current costs no build, a stale/unstamped/dirty-tree binary is rebuilt, a rebuild restarts the agent while an unchanged one only gets started if it isn't running, an agent that isn't loaded is bootstrapped, and no network, no clone, no build or a refusing `launchctl` each warn and leave what is installed and running alone - against a mocked `git`/`go`/`launchctl` on a hermetic PATH, with `$HOME`, the Go bin directory and `$TMPDIR` all under one scratch directory. It never clones, compiles, or speaks to a real launchd.
@@ -744,7 +774,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash modules/inkwell-tailscale-serve.test.sh` - the serve step: an unconfigured node is published, a node already serving that port is left alone, a node serving something else is never overwritten, a port that merely starts with the same digits is not that port, and an unreachable daemon or a refused publish is a warning rather than a failed switch - against a mocked `tailscale` and a `timeout` wrapper that records the bound it was given. It never touches a real tailnet.
 - `bash modules/managed-key-file.test.sh` - the one-key-file step: a machine that has never had one gets an empty mode-600 `~/.fabrica/brain.env` and a symlink at the old `~/.inkwell/env`, every switch after that is silent, a key file readable by other accounts is tightened and said out loud, a `0400` one is left read-only, a byte-identical duplicate is removed and a duplicate whose canonical file holds nothing is *moved* in - while two different non-empty key files, a directory in the way, a canonical path that is itself a symlink (which linking to would be a loop), and a link pointing at somebody else's key are each refused with both files left exactly as they were. It needs nothing but a scratch directory, and never reads or writes a real key file.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
-- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix`, `modules/linux.nix`, `modules/managed-key-file.nix` and `modules/inkwell-linux.nix` actually run - including the linger step, and the key-file step, whose empty mode-600 file and `~/.inkwell/env` symlink are asserted on the real activation rather than only against a scratch directory, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
+- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix`, `modules/linux.nix`, `modules/managed-key-file.nix` and `modules/inkwell-linux.nix` actually run - including the linger step, and the key-file step, whose empty mode-600 file and `~/.inkwell/env` symlink are asserted on the real activation rather than only against a scratch directory, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of), that the shadowing guard clears a leftover `npm link` symlink seeded in the way without touching the checkout it points at, and that the Node pin works end to end - a real `fnm install` of the version in `./fabrica-node-version` on an activation's own PATH, and a generated `fabrica` launcher that names it and the CLI npm put under the managed prefix. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
