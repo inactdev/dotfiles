@@ -24,20 +24,38 @@
 # nothing to install today is exactly where a stale ~/.local/bin/fabrica
 # survives.
 #
-# Run as: fabrica-sync <npm-prefix> [guard-library]
+# Installing the right Fabrica and finding it are still only two thirds of
+# it: the Node it runs on has to be the one version Fabrica is supported
+# on, whatever .node-version the directory it was invoked from declares.
+# So between the install decision and the guard, pin_fabrica_to_node
+# replaces npm's own `fabrica` shim with a launcher naming that version
+# through `fnm exec --using` - the same thing work/bootstrap.sh's
+# write_fabrica_launcher does for the work Mac, from the same pin
+# (./fabrica-node-version at the repository root, which modules/fabrica.nix
+# reads and passes in). That also runs on every path, for a reason of its
+# own: `fabrica update` is the day-to-day way to move Fabrica forward and
+# is an `npm install -g`, which puts npm's unpinned shim back.
+#
+# Run as: fabrica-sync <npm-prefix> <node-version> [guard-library]
 # The prefix is passed in rather than hardcoded so modules/fabrica.nix
 # holds the single definition of where the managed global install lives
-# (it also puts <npm-prefix>/bin on PATH). The guard library is passed too
-# because Nix gives each of these files its own store path, so the script
-# cannot find its sibling by looking next to itself; the default is for
-# running this by hand out of a checkout. That module runs this with git,
-# node/npm, bash, zsh and coreutils put on PATH from the Nix store, so
-# activation never depends on whatever node a login shell happens to have
-# active; run by hand, it uses whatever those names resolve to.
+# (it also puts <npm-prefix>/bin on PATH). The Node version is passed in
+# so that module can read it from the one file the work host reads too,
+# and so the value lands on the activation command line, where a bump
+# changes the generation rather than only being noticed at run time. The
+# guard library is passed too because Nix gives each of these files its
+# own store path, so the script cannot find its sibling by looking next to
+# itself; the default is for running this by hand out of a checkout. That
+# module runs this with git, node/npm, fnm, bash, zsh and coreutils put on
+# PATH from the Nix store, so activation never depends on whatever node a
+# login shell happens to have active; run by hand, it uses whatever those
+# names resolve to.
 set -euo pipefail
 
-prefix=${1:?usage: fabrica-sync <npm-prefix> [guard-library]}
-guard_lib=${2:-$(dirname "$0")/managed-bin-guard.sh}
+usage='usage: fabrica-sync <npm-prefix> <node-version> [guard-library]'
+prefix=${1:?"$usage"}
+node_version=${2:?"$usage"}
+guard_lib=${3:-$(dirname "$0")/managed-bin-guard.sh}
 
 repo_url=https://github.com/inactdev/fabrica.git
 branch=master
@@ -173,6 +191,8 @@ install_from_pack() {
   local tmpdir=$1
   local clone_dir=$tmpdir/clone
   local candidate
+  local bin=$prefix/bin/fabrica
+  local previous=
   local -a tarballs=()
 
   if ! GIT_TERMINAL_PROMPT=0 git \
@@ -197,9 +217,45 @@ install_from_pack() {
     return 1
   fi
 
+  # The launcher pin_fabrica_to_node writes lives at the exact path npm
+  # wants for its own shim, and npm refuses to link a global bin over a
+  # path it does not already own: bin-links' check-bin rejects with
+  # "EEXIST: file already exists" for a global, top-level install unless
+  # what is there is a symlink resolving into the package being installed.
+  # The launcher is a real file, so without this every install after the
+  # first pin would fail. `npm install -g --force` would buy the same
+  # single exemption by switching off every other check npm has, so it is
+  # not used. A symlink is left alone: that is npm's own shim, which npm
+  # is entitled to replace, and this is the only install path that ever
+  # ran before the pin existed.
+  #
+  # Moved aside rather than deleted, and moved back if the install fails:
+  # before the pin existed a failed `npm install -g` simply left the
+  # previous copy alone, and that is still the right outcome on a machine
+  # in the middle of real work. The same shape as work/bootstrap.sh's
+  # install_fabrica, for the same reason.
+  #
+  # A run killed between the two moves - a ctrl-C in `./run.sh rebuild`, a
+  # lid closed mid-switch - leaves the launcher under its moved-aside name
+  # with no `fabrica` beside it. restore_abandoned_launcher puts that
+  # right, and runs before the install decision rather than after it,
+  # because the decision can conclude there is nothing to install on
+  # exactly the machine that has no fabrica at all; see there.
+  if [ -e "$bin" ] && [ ! -L "$bin" ]; then
+    previous=$bin.fabrica-sync-previous.$$
+    mv -f "$bin" "$previous" || previous=
+  fi
+
   if ! npm install -g --prefix "$prefix" "${tarballs[0]}"; then
+    if [ -n "$previous" ]; then
+      mv -f "$previous" "$bin" || true
+    fi
     warn "npm install -g ${tarballs[0]} failed."
     return 1
+  fi
+
+  if [ -n "$previous" ]; then
+    rm -f "$previous"
   fi
 }
 
@@ -280,7 +336,275 @@ sync_to_remote_tip() {
   return 0
 }
 
+# Which CLI script `fabrica` is meant to hand to node, printed on stdout.
+# Exit status 1 means "could not tell", and the caller then leaves whatever
+# is installed exactly as it is.
+#
+# Two sources, because this runs on every activation and only some of them
+# have just installed:
+#
+#   - $1 is a symlink: that is npm's own shim, and what it points at is
+#     npm's answer to where the package it installed put its entry point.
+#     npm stays the one authority on that, rather than this script reading
+#     package.json's `bin` field and redoing npm's normalization itself.
+#     The chain is followed by hand rather than with `readlink -f` or
+#     `realpath`, because this has to behave identically on personal-mac
+#     and home-linux and neither is dependable on a stock macOS: there is
+#     no `realpath` at all, and BSD `readlink` only grew `-f` recently
+#     enough that an older OS build prints an empty line - which here
+#     would generate a launcher that execs nothing.
+#   - $1 is a regular file this script wrote: it carries the answer on its
+#     own FABRICA_CLI line, which is exactly why the launcher is written
+#     with one. That is the only source available on an activation that
+#     installs nothing - above all the one that bumps
+#     ./fabrica-node-version while Fabrica's own commit has not moved,
+#     where there is no npm shim left to ask.
+#
+# The same symlink walk exists in work/bootstrap.sh (resolve_link) and in
+# modules/managed-bin-guard.sh (mbg_resolve). Not shared, because nothing
+# here can share it: Nix gives every file in this directory its own store
+# path, so this script cannot source a sibling it was not handed, and the
+# one library it is handed is deliberately sourced at the very end of this
+# file (see there) so its absence costs a warning rather than the pin.
+cli_entry() {
+  local path=$1 hops=0 target dir line
+
+  if [ -L "$path" ]; then
+    while [ -L "$path" ] && [ "$hops" -lt 32 ]; do
+      target=$(readlink "$path") || return 1
+      [ -n "$target" ] || return 1
+      case $target in
+        /*) path=$target ;;
+        *) path=$(dirname "$path")/$target ;;
+      esac
+      hops=$((hops + 1))
+    done
+    [ -f "$path" ] || return 1
+    # An absolute path with no symlinked or relative component left in it:
+    # the launcher runs from arbitrary working directories, so npm's own
+    # relative `../lib/node_modules/...` target would resolve differently
+    # every time.
+    dir=$(cd "$(dirname "$path")" 2>/dev/null && pwd -P) || return 1
+    printf '%s/%s' "$dir" "$(basename "$path")"
+    return 0
+  fi
+
+  [ -f "$path" ] || return 1
+  # `|| [ -n "$line" ]` so a final line with no newline is still read.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      'FABRICA_CLI="'*'"')
+        line=${line#'FABRICA_CLI="'}
+        line=${line%'"'}
+        [ -f "$line" ] || return 1
+        printf '%s' "$line"
+        return 0
+        ;;
+    esac
+  done <"$path"
+  return 1
+}
+
+# Put back a launcher that an interrupted install left moved aside, when
+# there is no `fabrica` left for it to clash with.
+#
+# install_from_pack has to move a non-symlink bin entry out of npm's way
+# before installing (see there), and moves it back itself if the install
+# fails. What neither it nor npm can undo is the run being killed in
+# between. work/bootstrap.sh has the identical window and can leave it to
+# the next run, because that script reinstalls Fabrica unconditionally
+# every time it is invoked. This one installs only when the commit moved,
+# and npm unpacks the package - build-info.json included - before it links
+# the bin, so the very next activation can read that commit, find it
+# already current, skip the install, and leave the machine with no
+# `fabrica` and no reason to make one. Hence an explicit recovery, first
+# thing, ahead of that decision.
+#
+# Three conditions, all of them about not making things worse than finding
+# nothing: only when there is no `fabrica` to overwrite, only when exactly
+# one abandoned launcher is there to be unambiguous about, and only when
+# the CLI it names is still installed - one pointing into a package that
+# has since gone is a `fabrica` that starts and then fails, which is
+# harder to read than one that is plainly missing. Everything else warns
+# and returns 0, like every other path through this script.
+restore_abandoned_launcher() {
+  local bin=$prefix/bin/fabrica
+  local candidate
+  local -a abandoned=()
+
+  if [ -e "$bin" ] || [ -L "$bin" ]; then
+    return 0
+  fi
+
+  # An unmatched glob stays literal here (no nullglob), which the -f test
+  # filters out along with anything that is not a plain file.
+  for candidate in "$bin".fabrica-sync-previous.*; do
+    [ -f "$candidate" ] || continue
+    abandoned+=("$candidate")
+  done
+  if [ "${#abandoned[@]}" -eq 0 ]; then
+    return 0
+  fi
+  if [ "${#abandoned[@]}" -gt 1 ]; then
+    warn "${#abandoned[@]} abandoned launchers sit next to a missing $bin, so none of them"
+    warn "was put back - there is no telling which is current. They are named"
+    warn "$bin.fabrica-sync-previous.<pid>; keep the newest as $bin, delete the rest."
+    return 0
+  fi
+
+  if ! cli_entry "${abandoned[0]}" >/dev/null 2>&1; then
+    warn "an interrupted install left ${abandoned[0]} where $bin should be, but the CLI it"
+    warn "names is no longer installed, so it was left alone. A switch with the network up"
+    warn "reinstalls Fabrica and writes a fresh one."
+    return 0
+  fi
+
+  if mv -f "${abandoned[0]}" "$bin"; then
+    say "put back the launcher an interrupted install left at ${abandoned[0]}."
+  else
+    warn "could not put ${abandoned[0]} back as $bin, so there is no fabrica to run."
+  fi
+  return 0
+}
+
+# The launcher's full text on stdout, so the caller can compare it against
+# what is already installed and write only when the two differ - a switch
+# that changes nothing should say nothing.
+#
+# Deliberately the same shape as the one work/bootstrap.sh's
+# write_fabrica_launcher generates for the work Mac, fnm fallback included.
+# fnm's absolute path is baked in because this launcher must also work
+# where no interactive shell has run - a launchd agent, a systemd unit, a
+# cron-style job - and nothing has put the home-manager profile's bin
+# directory on PATH. On these hosts that absolute path is a store path, so
+# the `command -v` fallback is what covers the window between a
+# `nix-collect-garbage` that removed it and the next switch, which rewrites
+# this file from scratch.
+launcher_text() {
+  local entry=$1 fnm_bin=$2
+  cat <<EOF
+#!/bin/sh
+# Generated by modules/fabrica-sync.sh - do not edit. Every home-manager
+# activation on this host rewrites it from scratch.
+#
+# Fabrica runs on exactly Node $node_version, from whatever directory it is
+# invoked in: 'fnm exec --using=<version>' picks that version for this one
+# command without touching the shell, so a repository's own .node-version
+# (which fnm's cd hook in modules/core.nix does act on) cannot change which
+# Node Fabrica itself gets. It also puts that version first on PATH for
+# everything Fabrica shells out to.
+#
+# FABRICA_CLI is npm's own answer to where the package it installed put its
+# entry point, read off npm's shim before this file replaced it. It is kept
+# on a line of its own so a later activation can read it back out of here
+# when there is no npm shim left to ask - see cli_entry in the generator.
+FABRICA_CLI="$entry"
+FNM="$fnm_bin"
+if [ ! -x "\$FNM" ]; then
+  FNM="\$(command -v fnm)" || {
+    echo "fabrica: fnm is not installed, so Node $node_version cannot be selected." >&2
+    echo "         Re-run the switch: ./run.sh rebuild" >&2
+    exit 127
+  }
+fi
+exec "\$FNM" exec --using=$node_version node "\$FABRICA_CLI" "\$@"
+EOF
+}
+
+# Make `fabrica` run on exactly the pinned version whatever the current
+# directory declares, by replacing npm's shim with the launcher above.
+#
+# Runs on every path through this script, like the guard below: `fabrica
+# update` (and any other `npm install -g`) puts npm's unpinned shim back at
+# this path, so a machine that had nothing to install today is exactly
+# where an unpinned fabrica survives unnoticed.
+#
+# Every failure warns and returns 0, leaving whatever runs today running.
+# One ordering detail is what keeps that true: the launcher is written only
+# once `fnm exec --using=<version>` has been shown to work, because a
+# launcher naming a version fnm has not got turns a working `fabrica` into
+# one that cannot start at all. (work/bootstrap.sh writes its launcher
+# either way and reports the missing download as a pending item instead -
+# it can, because a bootstrap is a command someone ran on purpose and is
+# watching; an activation is not.)
+pin_fabrica_to_node() {
+  local bin=$prefix/bin/fabrica
+  local fnm_bin entry want tmp
+
+  if [ ! -e "$bin" ] && [ ! -L "$bin" ]; then
+    # Nothing installed at all. The guard below is what says so, in its
+    # own words, on every path through this script.
+    return 0
+  fi
+
+  fnm_bin=$(command -v fnm 2>/dev/null) || fnm_bin=
+  if [ -z "$fnm_bin" ]; then
+    warn "no fnm on PATH, so fabrica was left running on whatever node the shell that"
+    warn "starts it happens to have, rather than on Node $node_version. fnm is part of"
+    warn "modules/core.nix's package set, so a switch reporting this is one to look into."
+    return 0
+  fi
+
+  entry=$(cli_entry "$bin") || entry=
+  if [ -z "$entry" ]; then
+    warn "could not tell which CLI script $bin runs, so it was left exactly as it is"
+    warn "and fabrica is not pinned to Node $node_version."
+    return 0
+  fi
+
+  # fnm's own documented way to run one command on one version, used as the
+  # probe as well, so what is checked is exactly the command line the
+  # launcher ends in rather than merely that some directory exists under
+  # fnm's base dir. `fnm install` is needed because `fnm exec` has no
+  # --install-if-missing of its own (only `fnm use` does).
+  if ! fnm exec --using="$node_version" node --version >/dev/null 2>&1; then
+    say "installing Node $node_version through fnm - the one version Fabrica runs on."
+    if ! fnm install "$node_version"; then
+      warn "fnm install $node_version failed, so fabrica was left unpinned rather than"
+      warn "pointed at a version that is not there. Re-run the switch, or \`fnm install"
+      warn "$node_version\` by hand, once the cause is cleared."
+      return 0
+    fi
+    if ! fnm exec --using="$node_version" node --version >/dev/null 2>&1; then
+      warn "fnm install $node_version reported success but that version still cannot be"
+      warn "selected, so fabrica was left unpinned."
+      return 0
+    fi
+  fi
+
+  want=$(launcher_text "$entry" "$fnm_bin")
+  if [ -f "$bin" ] && [ ! -L "$bin" ] && [ "$(cat "$bin")" = "$want" ]; then
+    say "fabrica already runs on Node $node_version, nothing to re-pin."
+    return 0
+  fi
+
+  # Written to a temporary file and moved into place so the switch is
+  # atomic. What sits at that path right now works - npm's own shim, or a
+  # launcher naming another version - so a half-written `fabrica` would be
+  # strictly worse than either end state, and `mv` never leaves one.
+  tmp=$bin.fabrica-sync-tmp.$$
+  if ! (printf '%s\n' "$want" >"$tmp" && chmod 755 "$tmp"); then
+    rm -f "$tmp"
+    warn "could not write $tmp, so fabrica is not pinned to Node $node_version."
+    return 0
+  fi
+  if ! mv -f "$tmp" "$bin"; then
+    rm -f "$tmp"
+    warn "could not move the launcher into place at $bin, so fabrica is not pinned to"
+    warn "Node $node_version."
+    return 0
+  fi
+  say "fabrica pinned to Node $node_version (running $entry)."
+  return 0
+}
+
+# Recovery first: the install decision below is allowed to conclude that
+# there is nothing to do, and on a machine left without a `fabrica` by an
+# interrupted run that conclusion is right about the commit and wrong about
+# the machine.
+restore_abandoned_launcher
 sync_to_remote_tip
+pin_fabrica_to_node
 
 # The guard is sourced this late, and its absence is survivable, for the
 # same reason every other failure here is: a missing library is worth a

@@ -70,9 +70,38 @@ MANAGED_PREFIX="$HOME/.local"
 # run with on this host: install_node_version downloads exactly this through
 # fnm, and write_fabrica_launcher names it in the launcher it generates, so
 # `fabrica` gets it no matter which directory (and therefore which
-# .node-version) the shell is sitting in. Bumping Fabrica's supported Node
-# is this one line plus a re-run of the bootstrap.
-FABRICA_NODE_VERSION=24.18.0
+# .node-version) the shell is sitting in.
+#
+# Read from ./fabrica-node-version at the repository root rather than
+# written out here, because the Nix hosts pin the same version the same
+# way - modules/fabrica.nix reads that one file with builtins.readFile and
+# hands it to modules/fabrica-sync.sh, which generates an equivalent
+# launcher for personal-mac and home-linux - and two copies of a version
+# number are two versions waiting to disagree. Bumping Fabrica's supported
+# Node is that one file, plus a re-run of this bootstrap here and a switch
+# on each Nix host.
+#
+# Resolved from this file's own location, not from the $repo argument
+# main() takes: this assignment runs when the file is loaded, which is also
+# what work/codespace-bootstrap.sh and work/bootstrap.test.sh get when they
+# source it, and neither has passed a repo directory at that point.
+#
+# A checkout with no pin in it is a broken checkout, so this is the one
+# place in the script that stops rather than warns. Every step below would
+# otherwise install an unpinned Fabrica and report it as pinned, which is
+# the one outcome worse than not installing at all.
+FABRICA_NODE_VERSION_FILE="$(dirname -- "${BASH_SOURCE[0]}")/../fabrica-node-version"
+if [ ! -r "$FABRICA_NODE_VERSION_FILE" ]; then
+  echo "bootstrap.sh: no Node version pin at $FABRICA_NODE_VERSION_FILE." >&2
+  echo "              That file is part of this repository - re-clone it." >&2
+  exit 1
+fi
+FABRICA_NODE_VERSION="$(tr -d '[:space:]' <"$FABRICA_NODE_VERSION_FILE")"
+if [ -z "$FABRICA_NODE_VERSION" ]; then
+  echo "bootstrap.sh: $FABRICA_NODE_VERSION_FILE holds no version, so there is" >&2
+  echo "              nothing to pin Fabrica's Node to." >&2
+  exit 1
+fi
 
 # Fabrica's own state directory. Created by install_fabrica_home, and the
 # only thing in this script that holds a secret (brain.env), which is why
