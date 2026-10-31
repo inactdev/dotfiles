@@ -55,9 +55,14 @@ get the full setup via Nix + home-manager, composed from `modules/`:
   and kept running by home-manager activation (see "Inkwell's backend on
   the Mac" below). `personal-mac` only; launchd exists nowhere else.
 - `modules/inkwell-linux.nix` - the same backend as a systemd user service,
-  with the key file and the notes clone (see "Inkwell's backend on
+  with the key-file check and the notes clone (see "Inkwell's backend on
   `home-linux`" below). `home-linux` only - and the host it is actually
   meant to run on, being the one that is always on.
+- `modules/managed-key-file.nix` - the one key file every Fabrica and
+  Inkwell job reads, placed privately by the switch and never duplicated by
+  hand (see "One key file for every Fabrica and Inkwell job" below).
+  `personal-mac` and `home-linux` import this - the hosts that run those
+  jobs; Codespaces does not, having neither.
 - `modules/mac.nix` - the herdr config symlink, and the launchd agent that
   drives the self-update job below (on this host it fetches and tells you
   an update is ready; it never switches). `personal-mac` only (herdr is a
@@ -221,6 +226,46 @@ Like everything else in these two steps it never fails a switch - every
 outcome is a message and an exit 0. `fabrica doctor` is the hard stop that
 refuses to start work when the wrong Inspector would win.
 
+### One key file for every Fabrica and Inkwell job
+
+There is exactly one file on a machine holding the model key that Fabrica's
+jobs and Inkwell's backend both need: **`~/.fabrica/brain.env`**. The switch
+places it, at mode `600`, on `personal-mac` and `home-linux`
+(`modules/managed-key-file.nix`); the key itself goes in by hand, once per
+machine, and **never enters this repository, encrypted or not**.
+
+```sh
+$EDITOR ~/.fabrica/brain.env   # one KEY=value line per variable, no quotes needed
+```
+
+That is the whole of it on a new box - the file is already there and already
+private, because `install -m 600 /dev/null` creates it that way and the key
+is therefore never written into a file that was briefly readable by other
+accounts. Nothing here knows which variables are in it, so the day a job
+reads one more of them, nothing in these dotfiles changes.
+
+`~/.inkwell/env` is a **symlink** to that file. It used to be a second,
+hand-made copy of the same key (inkwell#46), which meant rotating the key
+meant remembering both files; anything that still reaches for the old path -
+a backend run by hand, an older note - now reads the one file. What the step
+does with a duplicate it finds is deliberately narrow:
+
+- byte-identical to `~/.fabrica/brain.env`: **removed**, and replaced by the
+  symlink. The bytes demonstrably survive in the file the link resolves to.
+- a key whose canonical file holds nothing (absent, or empty): **moved**
+  into `~/.fabrica/brain.env`, which is the migration - overwriting nothing
+  loses nothing, and the key is never copied, so it never exists twice.
+- two *different* non-empty key files: **neither is touched.** That is a
+  question only a human can answer, and the step says so by name with the
+  `diff`, the edit and the `rm` that answer it.
+
+A key file it finds readable by other accounts is tightened to `600` and
+said out loud on stderr, because a key that has been exposed is worth
+knowing about. Like the sync steps, none of this ever fails a switch: the
+hard refusal about this file belongs to whatever reads it (for Inkwell's
+backend, the `ExecStartPre` below, which will not start it without a usable
+key).
+
 ### Inkwell's backend on the Mac (`personal-mac`)
 
 The local server the phone posts a captured note to - it writes each one
@@ -287,22 +332,24 @@ therefore the same switch, with nothing extra to remember.
   `default.target`, and because every `home-linux` switch enables linger
   for this user (`modules/linux.nix`), "boot" rather than "login" is
   literally true - nobody has to be logged in.
-- **The key never enters this repository.** The backend's key lives at
-  `~/.inkwell/env`, placed by hand once, and systemd loads it with
-  `EnvironmentFile=` - so nothing here holds it, names the variables in it,
-  or has to change when the backend reads one more of them. It is also the
-  one thing in this area that *refuses* rather than warns: the service's
-  `ExecStartPre` runs `modules/inkwell-key-file.sh`, which will not let the
-  backend start when that file is missing, empty, owned by somebody else or
-  readable by any other account on the machine, and says so by name with
-  the command that fixes it. The same check runs during the switch too, so
-  the message arrives where somebody is watching instead of only in the
-  journal. On a new box:
+- **The key never enters this repository.** The backend reads the one key
+  file every Fabrica job reads, `~/.fabrica/brain.env` (see "One key file
+  for every Fabrica and Inkwell job" above for what places it and what
+  `~/.inkwell/env` is now), and systemd loads it with `EnvironmentFile=` -
+  so nothing here holds it, names the variables in it, or has to change
+  when the backend reads one more of them. It is also the one thing in this
+  area that *refuses* rather than warns: the service's `ExecStartPre` runs
+  `modules/inkwell-key-file.sh`, which will not let the backend start when
+  that file is missing, empty, owned by somebody else or readable by any
+  other account on the machine, and says so by name with the command that
+  fixes it. The same check runs during the switch too - after the step that
+  places the file, so its message is about an empty file rather than a
+  missing one - and so the message arrives where somebody is watching
+  instead of only in the journal. On a new box, the whole of what is left
+  to do:
 
   ```sh
-  mkdir -p ~/.inkwell
-  install -m 600 /dev/null ~/.inkwell/env   # created already private
-  $EDITOR ~/.inkwell/env                    # one KEY=value line per variable
+  $EDITOR ~/.fabrica/brain.env   # one KEY=value line per variable
   ```
 
 - **The notes can come from somewhere.** With a notes repository to
@@ -325,7 +372,8 @@ therefore the same switch, with nothing extra to remember.
   overwrite a node that already serves something else. The app is pointed
   at *this* box's `https://<host>.<tailnet>.ts.net` address.
 
-Two things are deliberately left for a human. The key file above is one.
+Two things are deliberately left for a human. The *contents* of the key file
+above are one - the file itself is placed by the switch, but no key is.
 The other is the Mac: `modules/inkwell.nix` is still composed into
 `personal-mac`, because the notes that exist today are there and stopping
 that agent would stop serving them - drop that one line from `flake.nix`
@@ -694,9 +742,10 @@ opened for it will clone this repo and run `install.sh` on creation.
 - `bash modules/inkwell-key-file.test.sh` - the one definition of a usable key file for Inkwell's backend, which the `home-linux` service runs before every start and the switch runs once: a 0600 (or 0400) non-empty file is accepted silently, and a missing one, an empty one, a directory, a group- or world-readable one, one owned by another account, or one whose mode could not be read at all is refused by name with the command that fixes it. Mode and owner are read through a symlink, because that is the file systemd's `EnvironmentFile=` will read. It needs nothing but a scratch directory, and never reads a real `~/.inkwell/env`.
 - `bash modules/inkwell-linux-sync.test.sh` - the `home-linux` service's half of the Inkwell step: the build is delegated with no launchd label, a rebuilt binary restarts the unit while an unchanged one is only started if it isn't already running, a `failed` unit is started again, no binary means nothing is started, and no `systemctl`, no systemd user session, a failed build, a missing build script or a refused restart each warn and leave what is running alone - against a mocked `systemctl` and a stand-in build script on a hermetic PATH, with `$HOME` and the Go bin directory under one scratch directory. It never speaks to a real systemd.
 - `bash modules/inkwell-tailscale-serve.test.sh` - the serve step: an unconfigured node is published, a node already serving that port is left alone, a node serving something else is never overwritten, a port that merely starts with the same digits is not that port, and an unreachable daemon or a refused publish is a warning rather than a failed switch - against a mocked `tailscale` and a `timeout` wrapper that records the bound it was given. It never touches a real tailnet.
+- `bash modules/managed-key-file.test.sh` - the one-key-file step: a machine that has never had one gets an empty mode-600 `~/.fabrica/brain.env` and a symlink at the old `~/.inkwell/env`, every switch after that is silent, a key file readable by other accounts is tightened and said out loud, a `0400` one is left read-only, a byte-identical duplicate is removed and a duplicate whose canonical file holds nothing is *moved* in - while two different non-empty key files, a directory in the way, a canonical path that is itself a symlink (which linking to would be a loop), and a link pointing at somebody else's key are each refused with both files left exactly as they were. It needs nothing but a scratch directory, and never reads or writes a real key file.
 - `bash install.test.sh` - the Codespaces posture-detection logic, `main`'s personal/work dispatch (including a direct proof that the work branch never calls any Nix function), and legacy-symlink backup logic in `install.sh`, hermetic (no Nix/apt/network).
-- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix`, `modules/linux.nix` and `modules/inkwell-linux.nix` actually run - including the linger step, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
+- `bash install.container-test.sh` - the real Codespaces install inside a disposable `ubuntu:24.04` container: Nix + the `codespace-personal` home-manager profile for personal posture, `work/codespace-bootstrap.sh`'s apt/npm/binary installs for work posture. Runs work posture *before* personal so the "Nix is never installed on this path" proof isn't confounded by Nix's own system-wide profile scripts, which personal's install would otherwise leave behind for every user in the container. Also asserts nothing under the work user's `$HOME` was git-cloned, and that a second work-posture run is idempotent. A section at the tail is not about `install.sh` at all: it does a real `home-manager switch` of the `ci-linux` host as a throwaway container user, the only place the activation steps in `modules/fabrica.nix`, `modules/inspector.nix`, `modules/linux.nix`, `modules/managed-key-file.nix` and `modules/inkwell-linux.nix` actually run - including the linger step, and the key-file step, whose empty mode-600 file and `~/.inkwell/env` symlink are asserted on the real activation rather than only against a scratch directory, which is asserted against what logind reports where logind exists, and against its own skipped-and-why warning where it doesn't. It is also the only place that proves the Fabrica the step installs carries the commit it was built from (which needs a real clone to read it out of) and that the shadowing guard clears a leftover `npm link` symlink seeded in the way, without touching the checkout it points at. Requires Docker; also wired to run in CI on every push/PR touching the Nix config or either install path (`.github/workflows/install-container-test.yml`).
 
 None of these touch this machine's real Homebrew, apt packages, macOS defaults, `~/.claude`, or `~/.dotfiles` - see `AGENTS.md` for why each is written that way and how to verify `work/bootstrap.sh` for real, in a container.
 
-The seven hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.
+The hermetic suites (everything above except the container test), plus shellcheck, `nixfmt --check`, and an eval-only `nix eval` of each host config, also run on every PR via `.github/workflows/ci-floor.yml`.

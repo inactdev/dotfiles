@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 #
-# inkwell-key-file - is the hand-placed key file for Inkwell's backend there,
-# and is it private enough to start the backend with?
+# inkwell-key-file - is the key file for Inkwell's backend there, does it have
+# a key in it, and is it private enough to start the backend with?
 #
 # The key never enters this repository, encrypted or not. It lives at a fixed
-# path outside it - ~/.inkwell/env - put there by hand once, and the backend's
-# systemd user service loads it with systemd's own `EnvironmentFile=`. Nothing
-# here knows, or needs to know, which variables are in it: the file's own
-# KEY=value lines decide that, which is also why the day the backend reads one
-# more of them nothing in these dotfiles has to change.
+# path outside it - ~/.fabrica/brain.env, the one key file every Fabrica and
+# Inkwell job on the machine reads - and the backend's systemd user service
+# loads it with systemd's own `EnvironmentFile=`. Nothing here knows, or needs
+# to know, which variables are in it: the file's own KEY=value lines decide
+# that, which is also why the day the backend reads one more of them nothing
+# in these dotfiles has to change.
+#
+# The switch *places* that file, empty and mode 600, and links the old
+# ~/.inkwell/env to it (modules/managed-key-file.nix); putting a key in it is
+# a human's job, once per machine. So the common refusal below is an empty
+# file rather than a missing one. Both refusals still print the commands that
+# create the file from nothing, which is correct precisely because they are
+# only ever printed about a file that is missing or empty - `install -m 600
+# /dev/null` truncates what it is pointed at, so that advice must never be
+# printed about a file with a key in it, and no path here does.
 #
 # Two call sites, one answer, so that "usable key file" has a single
 # definition (see modules/inkwell-linux.nix for both):

@@ -105,6 +105,7 @@
               ./modules/fabrica.nix
               ./modules/inkwell.nix
               ./modules/inspector.nix
+              ./modules/managed-key-file.nix
               ./modules/mac.nix
             ];
           }
@@ -115,7 +116,9 @@
       # box set up as this host. No nix-darwin here - it's a standalone
       # home-manager configuration (not a darwinSystem) composed from the
       # same modules/core.nix + modules/desktop.nix + modules/fabrica.nix +
-      # modules/inspector.nix as personal-mac, minus modules/mac.nix
+      # modules/inspector.nix + modules/managed-key-file.nix (the one key
+      # file every Fabrica and Inkwell job reads, which both hosts that run
+      # those jobs get) as personal-mac, minus modules/mac.nix
       # (Darwin-only: herdr, and the launchd half of the self-apply job) and
       # minus modules/inkwell.nix (Darwin-only too: launchd), plus
       # modules/linux.nix (Linux-only: the systemd user timer that is the
@@ -145,6 +148,7 @@
             ./modules/inkwell-linux.nix
             ./modules/inspector.nix
             ./modules/linux.nix
+            ./modules/managed-key-file.nix
           ])
         ];
       };
@@ -196,23 +200,28 @@
       # host is what CI runs it against.
       #
       # modules/core.nix + modules/fabrica.nix + modules/inkwell-linux.nix +
-      # modules/inspector.nix + modules/linux.nix, deliberately: the two
-      # modules under test, the one they share their PATH ordering with, and
-      # the other two Linux-only modules a home-linux activation would
-      # carry - which both contribute activation steps of their own
+      # modules/inspector.nix + modules/linux.nix +
+      # modules/managed-key-file.nix, deliberately: the two modules under
+      # test, the one they share their PATH ordering with, and the other
+      # three Linux-or-both-host modules a home-linux activation would
+      # carry - which all contribute activation steps of their own
       # (enabling linger for the user whose systemd timer applies the
-      # dotfiles, and the four steps that check the key file, clone the
-      # notes, install the Inkwell backend and publish it), asserted by the
-      # same rehearsal. The Inkwell steps reach nothing in that container -
+      # dotfiles, placing the one key file both Fabrica and Inkwell read,
+      # and the four steps that check that key file, clone the notes,
+      # install the Inkwell backend and publish it), asserted by the same
+      # rehearsal. The Inkwell steps reach nothing in that container -
       # inkwell is a private repository with no credentials there, and there
-      # is no tailscale and no key file - so each of them warns and exits 0,
-      # which is exactly the coverage wanted: what cannot be tested any
-      # other way is that a shell interprets those command lines at all.
+      # is no tailscale and no key in the key file the step above places -
+      # so each of them warns and exits 0, which is exactly the coverage
+      # wanted: what cannot be tested any other way is that a shell
+      # interprets those command lines at all.
       # No modules/desktop.nix and nothing Darwin-only, so the activation
       # needs no fonts and no git identity - and nothing it does need is a
       # hard requirement: the Inkwell steps are the only credential- or
       # secret-dependent ones in this host's set, and each of them is
-      # written to say so and carry on without. One
+      # written to say so and carry on without - the key-file step included,
+      # which on a scratch HOME has only an empty private file to place and
+      # needs no key to do it. One
       # consequence worth knowing: modules/linux.nix's systemd user unit
       # points at ~/.local/bin/dotfiles-auto-apply, which
       # modules/desktop.nix is what normally symlinks - on this host the
@@ -239,6 +248,7 @@
             ./modules/inkwell-linux.nix
             ./modules/inspector.nix
             ./modules/linux.nix
+            ./modules/managed-key-file.nix
           ])
         ];
       };

@@ -33,13 +33,15 @@ jobs:
           install.container-test.sh work/*.sh home/.local/bin/*
 
   # run.test.sh, install.test.sh, work/codespace-bootstrap.test.sh,
-  # home/.local/bin/dotfiles-auto-apply.test.sh and the four
-  # modules/inkwell-*.test.sh suites are pure bash logic tests (host
+  # home/.local/bin/dotfiles-auto-apply.test.sh, the four
+  # modules/inkwell-*.test.sh suites and modules/managed-key-file.test.sh are
+  # pure bash logic tests (host
   # selection, posture detection, the codespace-work apt/npm/binary install
   # logic against mocked apt-get/curl/npm, the self-apply job against a
-  # mocked git/run.sh, and the Inkwell backend's build, launchd-agent,
+  # mocked git/run.sh, the Inkwell backend's build, launchd-agent,
   # systemd-service, key-file and tailscale-serve decisions against a mocked
-  # git/go/launchctl/systemctl/tailscale/stat) with no macOS-only
+  # git/go/launchctl/systemctl/tailscale/stat, and the one-key-file step
+  # against nothing but two paths in a scratch directory) with no macOS-only
   # dependency - Ubuntu is cheaper and sufficient. Two of the Inkwell suites
   # test scripts that only ever run on personal-mac and two of them scripts
   # that only ever run on home-linux, and both are fine for the same reason:
@@ -71,6 +73,8 @@ jobs:
         run: HOME="$(mktemp -d)" bash modules/inkwell-key-file.test.sh
       - name: bash modules/inkwell-linux-sync.test.sh
         run: HOME="$(mktemp -d)" bash modules/inkwell-linux-sync.test.sh
+      - name: bash modules/managed-key-file.test.sh
+        run: HOME="$(mktemp -d)" bash modules/managed-key-file.test.sh
 
   # work/bootstrap.sh only ever runs on the work Mac (see AGENTS.md), and
   # its `#!/bin/sh` shebang resolves to a genuinely different shell on
