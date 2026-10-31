@@ -33,7 +33,8 @@
 # leftover `npm link` symlink seeded for it below, and whether the step's
 # Node pin works end to end - an `fnm install` of the one version from
 # ./fabrica-node-version, run on an activation's own PATH, and a generated
-# `fabrica` launcher that names it.
+# `fabrica` launcher that both names that version and, when actually run,
+# lands on it.
 #
 # Requires Docker. Usage: bash install.container-test.sh
 set -uo pipefail
@@ -721,6 +722,48 @@ fabrica_pinned_node_is_installed() {
 }
 assert "ci-linux: the activation installed Node $FABRICA_NODE_VERSION through fnm" \
   fabrica_pinned_node_is_installed
+
+# And the launcher actually run, which no amount of reading it can show.
+# The copy under test is the generated file with one line changed - its
+# FABRICA_CLI pointed at a script that prints the Node version it got
+# instead of at Fabrica's CLI - started from a directory with a
+# .node-version of its own, with nothing of the user's profile on PATH
+# (`docker exec` gets the image's PATH, which is why every check above has
+# to source hm-session-vars.sh and this one deliberately does not).
+#
+# Three claims in the one run. That the generated text is a working
+# /bin/sh script at all, rather than one that merely contains the right
+# words. That its baked-in absolute path to fnm is enough on its own -
+# `fabrica` has to start from a launchd agent or a systemd unit, where no
+# login shell has put the profile's bin directory on PATH, which is the
+# whole reason the launcher names fnm by path rather than by name. And
+# that the pin, not the directory, is what decides the version: 99.99.99
+# is well formed and cannot exist, so a launcher that ever let a version
+# file answer fails here loudly instead of quietly fetching something.
+#
+# Fabrica's real CLI is deliberately not what gets run: this needs an
+# answer about which Node was selected, not a Fabrica command invoked
+# against a container with no credentials and no ~/.fabrica worth
+# speaking of.
+fabrica_launcher_runs_on_the_pinned_node() {
+  local got
+  got="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c '
+    set -e
+    d="$(mktemp -d)"
+    printf "99.99.99\n" >"$d/.node-version"
+    printf "console.log(process.version)\n" >"$d/which-node.js"
+    sed "s|^FABRICA_CLI=.*|FABRICA_CLI=\"$d/which-node.js\"|" \
+      "$HOME/.npm-global/bin/fabrica" >"$d/fabrica"
+    chmod 755 "$d/fabrica"
+    out="$(cd "$d" && "$d/fabrica")"
+    rm -rf "$d"
+    printf "%s\n" "$out"' 2>/dev/null)"
+  [ "$got" = "v$FABRICA_NODE_VERSION" ] && return 0
+  echo "  the launcher reported Node: ${got:-<nothing>}" >&2
+  return 1
+}
+assert "ci-linux: running the launcher lands on Node $FABRICA_NODE_VERSION, whatever the directory says" \
+  fabrica_launcher_runs_on_the_pinned_node
 
 # Right binary, and it knows what it is. build-info.json is the one file
 # Fabrica's `prepare` writes, and all it puts there is `git rev-parse

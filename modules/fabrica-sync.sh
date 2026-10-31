@@ -234,6 +234,13 @@ install_from_pack() {
   # previous copy alone, and that is still the right outcome on a machine
   # in the middle of real work. The same shape as work/bootstrap.sh's
   # install_fabrica, for the same reason.
+  #
+  # A run killed between the two moves - a ctrl-C in `./run.sh rebuild`, a
+  # lid closed mid-switch - leaves the launcher under its moved-aside name
+  # with no `fabrica` beside it. restore_abandoned_launcher puts that
+  # right, and runs before the install decision rather than after it,
+  # because the decision can conclude there is nothing to install on
+  # exactly the machine that has no fabrica at all; see there.
   if [ -e "$bin" ] && [ ! -L "$bin" ]; then
     previous=$bin.fabrica-sync-previous.$$
     mv -f "$bin" "$previous" || previous=
@@ -398,6 +405,68 @@ cli_entry() {
   return 1
 }
 
+# Put back a launcher that an interrupted install left moved aside, when
+# there is no `fabrica` left for it to clash with.
+#
+# install_from_pack has to move a non-symlink bin entry out of npm's way
+# before installing (see there), and moves it back itself if the install
+# fails. What neither it nor npm can undo is the run being killed in
+# between. work/bootstrap.sh has the identical window and can leave it to
+# the next run, because that script reinstalls Fabrica unconditionally
+# every time it is invoked. This one installs only when the commit moved,
+# and npm unpacks the package - build-info.json included - before it links
+# the bin, so the very next activation can read that commit, find it
+# already current, skip the install, and leave the machine with no
+# `fabrica` and no reason to make one. Hence an explicit recovery, first
+# thing, ahead of that decision.
+#
+# Three conditions, all of them about not making things worse than finding
+# nothing: only when there is no `fabrica` to overwrite, only when exactly
+# one abandoned launcher is there to be unambiguous about, and only when
+# the CLI it names is still installed - one pointing into a package that
+# has since gone is a `fabrica` that starts and then fails, which is
+# harder to read than one that is plainly missing. Everything else warns
+# and returns 0, like every other path through this script.
+restore_abandoned_launcher() {
+  local bin=$prefix/bin/fabrica
+  local candidate
+  local -a abandoned=()
+
+  if [ -e "$bin" ] || [ -L "$bin" ]; then
+    return 0
+  fi
+
+  # An unmatched glob stays literal here (no nullglob), which the -f test
+  # filters out along with anything that is not a plain file.
+  for candidate in "$bin".fabrica-sync-previous.*; do
+    [ -f "$candidate" ] || continue
+    abandoned+=("$candidate")
+  done
+  if [ "${#abandoned[@]}" -eq 0 ]; then
+    return 0
+  fi
+  if [ "${#abandoned[@]}" -gt 1 ]; then
+    warn "${#abandoned[@]} abandoned launchers sit next to a missing $bin, so none of them"
+    warn "was put back - there is no telling which is current. They are named"
+    warn "$bin.fabrica-sync-previous.<pid>; keep the newest as $bin, delete the rest."
+    return 0
+  fi
+
+  if ! cli_entry "${abandoned[0]}" >/dev/null 2>&1; then
+    warn "an interrupted install left ${abandoned[0]} where $bin should be, but the CLI it"
+    warn "names is no longer installed, so it was left alone. A switch with the network up"
+    warn "reinstalls Fabrica and writes a fresh one."
+    return 0
+  fi
+
+  if mv -f "${abandoned[0]}" "$bin"; then
+    say "put back the launcher an interrupted install left at ${abandoned[0]}."
+  else
+    warn "could not put ${abandoned[0]} back as $bin, so there is no fabrica to run."
+  fi
+  return 0
+}
+
 # The launcher's full text on stdout, so the caller can compare it against
 # what is already installed and write only when the two differ - a switch
 # that changes nothing should say nothing.
@@ -529,6 +598,11 @@ pin_fabrica_to_node() {
   return 0
 }
 
+# Recovery first: the install decision below is allowed to conclude that
+# there is nothing to do, and on a machine left without a `fabrica` by an
+# interrupted run that conclusion is right about the commit and wrong about
+# the machine.
+restore_abandoned_launcher
 sync_to_remote_tip
 pin_fabrica_to_node
 

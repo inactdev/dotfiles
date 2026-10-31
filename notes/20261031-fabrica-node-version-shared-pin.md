@@ -50,6 +50,21 @@ required, gated on `fnm exec --using=<v> node --version` as the probe. The
 probe is that command rather than a grep of `fnm list` so what is checked is
 exactly the command line the launcher ends in.
 
+What fnm's documentation does *not* say outright is that an explicit
+`--using` beats a `.node-version` in the working directory: it documents
+`--using <VERSION>` as "either an explicit version, or a filename with the
+version written in it", and scopes automatic version-file discovery to
+`use`/`install`/`use-on-cd` rather than to `exec`. Since that precedence is
+the whole requirement, `install.container-test.sh` asserts it instead of
+trusting it - it runs the generated launcher, with its `FABRICA_CLI` line
+swapped for a script that prints `process.version`, from a directory whose
+`.node-version` reads `99.99.99` (well formed, impossible), and requires
+the pinned version back. The same run is the only proof anywhere that the
+generated text is a working script at all, and that its baked-in absolute
+path to fnm is enough with nothing of the user's profile on PATH - which is
+what `fabrica` gets when it is started from a launchd agent or a systemd
+unit.
+
 ## The two things the Nix side needs that a bootstrap does not
 
 **The launcher has to be re-derivable with no npm shim to ask.**
@@ -74,6 +89,23 @@ the same shape as `work/bootstrap.sh`'s `install_fabrica`, and the reason
 `--force` is not used is that it would switch off every other check npm has
 to buy that one exemption. A *symlink* there is left alone: that is npm's
 own shim and npm is entitled to replace it.
+
+That move-aside opens one window the work host's copy does not have to
+care about, and `restore_abandoned_launcher` is what closes it. A run
+killed between the two moves leaves
+`<prefix>/bin/fabrica.fabrica-sync-previous.<pid>` beside no `fabrica` at
+all. `work/bootstrap.sh` can leave that to its next run because it
+reinstalls Fabrica unconditionally every time; this script installs only
+when the commit moved, and npm unpacks the package (`build-info.json`
+included) *before* it links the bin - so the next activation can read that
+commit, find it already current, skip the install, and leave the machine
+with no `fabrica` and nothing that would create one. Hence the recovery
+runs first, ahead of the install decision, and only when there is no
+`fabrica` to overwrite, exactly one abandoned launcher to be unambiguous
+about, and a CLI still installed at the path that launcher names. Anyone
+tempted to move it after `sync_to_remote_tip`, or to drop it on the
+grounds that the work host manages without one, is looking at the wrong
+half of the difference.
 
 ## One deliberate divergence from the work host
 
