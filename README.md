@@ -520,7 +520,7 @@ Nix, no home-manager. Everything for that path lives under `work/`:
   mirror - see "Node for Fabrica" below.
 - `work/bootstrap.sh` - installs Homebrew if missing, runs `brew bundle`,
   symlinks the same `home/.config/*` and `AGENTS.md` files the Nix path
-  uses plus ghostty (no wezterm/herdr - see below), links `work/zshrc` and
+  uses plus ghostty (no wezterm - see below), links `work/zshrc` and
   `work/claude-settings.json` into place, configures git (identity is
   prompted for, never defaulted), and applies the macOS `defaults` the Nix
   path also sets. Idempotent - safe to re-run any time, including via
@@ -662,6 +662,26 @@ summary says to run `claude setup-token` and where to put what it prints.
 Together with Docker Desktop below, that is the whole list of things a
 fresh work Mac still needs a human for after one bootstrap run.
 
+### herdr
+
+The work host gets herdr the same way and from the same place the personal
+Mac does: a plain Homebrew formula - `brew "herdr"` in `work/Brewfile`,
+`"herdr"` in `configuration.nix`'s `homebrew.brews`, both of which are the
+homebrew-core formula and need no tap. So `brew upgrade` is what updates
+it here; `herdr update` is for installs herdr's own installer manages and
+must not be used against a Homebrew one.
+
+Its configuration is this repo's `home/.config/herdr`, symlinked to
+`~/.config/herdr` by the bootstrap's `install_symlinks` - the plain-shell
+equivalent of the `mkOutOfStoreSymlink` in `modules/mac.nix`, so editing
+the config in the checkout is editing the live config on either host.
+
+That directory stays declaration-only on every host: nothing in this repo
+runs herdr, and nothing should. A `herdr server reload-agent-manifests`,
+`herdr tab rename`, or any other state-mutating command issued from a
+bootstrap or a test run repaints the real tabs and panes of whoever is
+logged in.
+
 ### Docker Desktop
 
 Docker is installed on the work Mac through the company's Self-Service
@@ -684,7 +704,7 @@ Docker Desktop itself via `configuration.nix`'s Homebrew casks, and
 Codespaces has no Docker Desktop to install either way.
 
 Deliberately excluded from the work host, by captain decision:
-wezterm, herdr, opensuperwhisper, ollama, cloudflared, arp-scan,
+wezterm, opensuperwhisper, ollama, cloudflared, arp-scan,
 imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
 
 The bootstrap ends with a short summary of anything it couldn't finish,
