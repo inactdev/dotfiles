@@ -1,2 +1,58 @@
 # The image inspector runs the check command in (inspector#47).
 FROM cimg/base:2025.10
+
+# nixfmt, the one thing check.sh needs that cimg/base does not already
+# carry (it brings shellcheck, bash, git and xargs). Pull request #38
+# passed Inspector and then failed CI twice on `nixfmt --check` because
+# the formatter was simply absent here - see issue #43.
+#
+# It comes from nixpkgs rather than from nixfmt's own GitHub release
+# because that release ships exactly one asset, an x86_64-linux static
+# binary (its release workflow builds `packages.nixfmt-static` on an
+# x86_64 runner), while this image is built for whatever architecture the
+# local Docker daemon defaults to - Inspector passes no --platform, so
+# that is arm64 on an Apple Silicon Mac, where such a binary would not
+# execute at all. nixpkgs builds nixfmt for both. `nixpkgs#nixfmt` is
+# also the exact package reference .github/workflows/ci-floor.yml's
+# nixfmt step resolves, so both halves of the gate run the same formatter
+# rather than two independently pinned ones.
+#
+# USER root because cimg/base ends on `USER circleci` and the installer
+# creates /nix; it is restored afterwards so the base image's contract is
+# unchanged for anything that does not pass an explicit --user (Inspector
+# does).
+#
+# The installer line is the one install.sh already uses for a container,
+# flag for flag, and the one Determinate documents for Dockerfiles:
+# `--init none` because there is no systemd here to supervise a
+# nix-daemon, `--extra-conf "sandbox = false"` because a container
+# commonly cannot nest Nix's own build sandbox (see the comment above
+# that call in install.sh). No daemon ever runs, and that costs nothing
+# twice over: root talks to the store directly during this build, and the
+# check itself never invokes nix at all - it runs the baked binary
+# through the /usr/local/bin symlink. That is also why an arbitrary uid
+# can use it (Inspector runs the container as the invoking host user):
+# store paths are world-readable, and /usr/local/bin is on every PATH, so
+# neither the formatter nor the check depends on a login shell's
+# environment.
+#
+# `--out-link /opt/nixfmt` is load-bearing rather than cosmetic: `nix
+# build` registers the out-link as a garbage-collection root, so the
+# binary cannot be collected out from under the symlink. The `test -x`
+# is there because `ln -s` happily creates a link to a path that does not
+# exist - without it a build that produced nothing would still succeed
+# and only fail at check time.
+#
+# Only FROM/USER/RUN instructions, deliberately: Inspector rebuilds an
+# image whose Dockerfile reads the build context (COPY, ADD, RUN --mount)
+# on every single run, and builds a toolchain-only one once.
+USER root
+RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
+      sh -s -- install linux --init none --extra-conf "sandbox = false" --no-confirm && \
+    /nix/var/nix/profiles/default/bin/nix \
+      --extra-experimental-features 'nix-command flakes' \
+      build --out-link /opt/nixfmt 'nixpkgs#nixfmt' && \
+    test -x /opt/nixfmt/bin/nixfmt && \
+    ln -s /opt/nixfmt/bin/nixfmt /usr/local/bin/nixfmt && \
+    rm -rf /root/.cache/nix
+USER circleci
