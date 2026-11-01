@@ -17,6 +17,17 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 SCRIPT="$SCRIPT_DIR/bootstrap.sh"
 
+# The one Node version Fabrica is supported on, read from the same single
+# pin at the repository root that work/bootstrap.sh reads (and that
+# modules/fabrica.nix reads for the Nix hosts). Every version assertion
+# below goes through this, so bumping Fabrica's supported Node is that one
+# file and nothing else - including nothing in this suite. What keeps that
+# from being a test that proves only its own tautology is
+# test_node_version_comes_from_the_shared_pin, which asserts the script
+# carries no copy of the number at all.
+PIN_FILE="$REPO_DIR/fabrica-node-version"
+PINNED_NODE=$(tr -d '[:space:]' <"$PIN_FILE")
+
 pass_count=0
 fail_count=0
 
@@ -604,11 +615,84 @@ test_zshrc_loads_fnm_guarded() {
 
 # --- the pinned Node version -------------------------------------------
 
+# The pin is one plain-text file at the repository root, read by both hosts
+# that pin: work/bootstrap.sh here, and modules/fabrica.nix (which hands it
+# to modules/fabrica-sync.sh) for personal-mac and home-linux. So the thing
+# to assert is not just that the number is right - every other test in this
+# section reads $PINNED_NODE and would pass against a second copy just as
+# happily - but that there is no second copy to drift: work/bootstrap.sh
+# must not contain the version at all.
+#
+# A static check, like test_no_username_hardcoded_in_source: it is about
+# the code, not about a run.
+test_node_version_comes_from_the_shared_pin() {
+  if [ -r "$PIN_FILE" ]; then
+    pass_count=$((pass_count + 1)); echo "ok - the shared pin exists at ./fabrica-node-version"
+  else
+    fail_count=$((fail_count + 1)); echo "FAIL - no shared pin at $PIN_FILE"
+  fi
+  case "$PINNED_NODE" in
+    *[0-9].[0-9]*.[0-9]*)
+      pass_count=$((pass_count + 1)); echo "ok - the pin holds a version ($PINNED_NODE)"
+      ;;
+    *)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - the pin does not hold a version: '$PINNED_NODE'"
+      ;;
+  esac
+  assert_contains "work/bootstrap.sh reads the shared pin" "$(cat "$SCRIPT")" \
+    'fabrica-node-version'
+  case "$(cat "$SCRIPT")" in
+    *"$PINNED_NODE"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - work/bootstrap.sh carries the Node version itself ($PINNED_NODE);"
+      echo "       it must read ./fabrica-node-version, which the Nix hosts read too"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - work/bootstrap.sh carries no copy of the Node version"
+      ;;
+  esac
+}
+
+# The Nix hosts' half of the same pin, asserted from here because this is
+# the suite that owns the version: modules/fabrica.nix must read the one
+# file rather than carry its own copy, and must hand what it reads to
+# modules/fabrica-sync.sh, whose generated launcher ends in the same
+# `fnm exec --using=` as work/bootstrap.sh's. Text assertions only - a real
+# activation is what install.container-test.sh covers, and nothing cheaper
+# can.
+test_nix_hosts_read_the_same_pin() {
+  nix_module=$(cat "$REPO_DIR/modules/fabrica.nix")
+  sync_script=$(cat "$REPO_DIR/modules/fabrica-sync.sh")
+  assert_contains "modules/fabrica.nix reads the shared pin" "$nix_module" \
+    'builtins.readFile ../fabrica-node-version'
+  assert_contains "modules/fabrica.nix puts fnm on the activation PATH" "$nix_module" \
+    'pkgs.fnm'
+  assert_contains "modules/fabrica.nix passes the version to the sync script" "$nix_module" \
+    'escapeShellArg fabricaNodeVersion'
+  # The single quotes are deliberate: $node_version is the literal text
+  # expected in the generated launcher's heredoc, not an expansion.
+  # shellcheck disable=SC2016
+  assert_contains "the sync script pins fabrica with fnm exec --using" "$sync_script" \
+    'exec --using=$node_version node'
+  case "$nix_module$sync_script" in
+    *"$PINNED_NODE"*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - the Nix side carries the Node version itself ($PINNED_NODE)"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - the Nix side carries no copy of the Node version either"
+      ;;
+  esac
+}
+
 test_node_version_installed_through_fnm() {
   setup
   run_bootstrap >"$TMP/out.log" 2>&1 || true
   assert_contains "the pinned Node version is installed with fnm" \
-    "$(cat "$FIXTURES/fnm.log")" "fnm install 24.18.0"
+    "$(cat "$FIXTURES/fnm.log")" "fnm install $PINNED_NODE"
   teardown
 }
 
@@ -625,7 +709,7 @@ test_fabrica_launcher_pins_the_node_version() {
   fi
   body=$(cat "$launcher")
   assert_contains "launcher runs the pinned version through fnm exec" "$body" \
-    "exec --using=24.18.0 node"
+    "exec --using=$PINNED_NODE node"
   # An absolute path, not npm's relative '../lib/...' link target: the
   # launcher is run from arbitrary working directories, so a relative entry
   # point would resolve differently every time. Asserted as "node \"/" plus
@@ -659,7 +743,7 @@ test_fabrica_launcher_runs_and_forwards_arguments() {
   if run_fabrica_launcher doctor --json >"$TMP/launcher.log" 2>&1; then code=0; else code=$?; fi
   assert_eq "launcher exits 0" "0" "$code"
   assert_contains "launcher asks fnm for the pinned version" \
-    "$(cat "$FIXTURES/fnm.log")" "fnm exec --using=24.18.0 node"
+    "$(cat "$FIXTURES/fnm.log")" "fnm exec --using=$PINNED_NODE node"
   assert_contains "launcher runs the installed CLI with the arguments it was given" \
     "$(cat "$FIXTURES/node.log")" "/.local/lib/node_modules/fabrica/dist/cli.js doctor --json"
   teardown
@@ -675,10 +759,10 @@ test_second_run_reuses_the_installed_node_and_relinks_cleanly() {
   if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
   assert_eq "second run exits 0" "0" "$code"
   assert_eq "the pinned version is downloaded exactly once" "1" \
-    "$(grep -c 'fnm install 24.18.0' "$FIXTURES/fnm.log" | tr -d ' ')"
+    "$(grep -c "fnm install $PINNED_NODE" "$FIXTURES/fnm.log" | tr -d ' ')"
   assert_contains "the second run says it is already installed" "$out" \
-    "Node 24.18.0 already installed"
-  assert_contains "and re-pins the launcher" "$out" "fabrica pinned to Node 24.18.0"
+    "Node $PINNED_NODE already installed"
+  assert_contains "and re-pins the launcher" "$out" "fabrica pinned to Node $PINNED_NODE"
   assert_eq "the moved-aside previous launcher is cleaned up" "0" \
     "$(find "$HOME/.local/bin" -name 'fabrica.pre-bootstrap.*' | wc -l | tr -d ' ')"
   case "$out" in
@@ -721,7 +805,7 @@ test_missing_fnm_warns_and_leaves_npms_own_shim() {
   if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
   assert_eq "bootstrap still exits 0 without fnm" "0" "$code"
   assert_contains "says fnm is missing" "$out" "fnm is not on PATH"
-  assert_contains "summary flags the Node pin as pending" "$out" "Node 24.18.0"
+  assert_contains "summary flags the Node pin as pending" "$out" "Node $PINNED_NODE"
   assert_contains "the rest of the bootstrap still ran" "$out" "applying macOS defaults"
   if [ -L "$HOME/.local/bin/fabrica" ]; then
     pass_count=$((pass_count + 1)); echo "ok - npm's own fabrica shim is left in place"
@@ -736,8 +820,8 @@ test_fnm_install_failure_warns_and_continues() {
   : >"$FIXTURES/fnm_install_fail"
   if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
   assert_eq "bootstrap still exits 0 when the Node download fails" "0" "$code"
-  assert_contains "says the fnm install failed" "$out" "fnm install 24.18.0 failed"
-  assert_contains "summary flags the Node pin as pending" "$out" "Node 24.18.0"
+  assert_contains "says the fnm install failed" "$out" "fnm install $PINNED_NODE failed"
+  assert_contains "summary flags the Node pin as pending" "$out" "Node $PINNED_NODE"
   assert_contains "the rest of the bootstrap still ran" "$out" "applying macOS defaults"
   teardown
 }
@@ -971,6 +1055,8 @@ test_fabrica_clone_failure_warns_and_continues
 test_fabrica_npm_failure_warns_and_continues
 test_inspector_failure_warns_and_continues
 test_fabrica_and_inspector_leave_no_temp_files_on_success
+test_node_version_comes_from_the_shared_pin
+test_nix_hosts_read_the_same_pin
 test_node_version_installed_through_fnm
 test_fabrica_launcher_pins_the_node_version
 test_fabrica_launcher_runs_and_forwards_arguments

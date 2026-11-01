@@ -607,6 +607,14 @@ test_inspector_sync_guards_even_when_it_installs_nothing() {
   teardown
 }
 
+# The Node version argument is real, not filler: fabrica-sync.sh takes
+# <npm-prefix> <node-version> [guard-library], read by modules/fabrica.nix
+# out of ./fabrica-node-version. Read from that same file here rather than
+# written out, for the same reason nothing else in this repository writes
+# it out. There is no fnm on this suite's PATH, so the pinning step says so
+# and leaves the managed copy alone - which is the state this test wants
+# anyway, since what it is about is the guard running on a path that
+# installs nothing.
 test_fabrica_sync_guards_even_when_it_installs_nothing() {
   setup
   make_tool "$HOME/.npm-global/bin/fabrica" managed
@@ -614,8 +622,10 @@ test_fabrica_sync_guards_even_when_it_installs_nothing() {
   mock_both_shells_managed_first
   mock_offline_git
 
+  pinned_node=$(tr -d '[:space:]' <"$SCRIPT_DIR/../fabrica-node-version")
   rc=0
-  out=$("$REAL_BASH" "$SCRIPT_DIR/fabrica-sync.sh" "$HOME/.npm-global" "$GUARD" 2>"$TMP/err") || rc=$?
+  out=$("$REAL_BASH" "$SCRIPT_DIR/fabrica-sync.sh" "$HOME/.npm-global" "$pinned_node" \
+    "$GUARD" 2>"$TMP/err") || rc=$?
   err=$(cat "$TMP/err")
 
   assert_eq "fabrica-sync still exits 0" "0" "$rc"

@@ -25,12 +25,16 @@
 # for the user whose timer applies the dotfiles, the one that places the one
 # key file every Fabrica and Inkwell job reads, and the four that check that
 # key file, clone Inkwell's notes, install its backend and publish it) - see
-# the comment block above it for why nothing cheaper can. Two of the things
-# only that section can see: whether the Fabrica the step installs
+# the comment block above it for why nothing cheaper can. Three of the
+# things only that section can see: whether the Fabrica the step installs
 # carries the commit it was built from (Fabrica's `prepare` reads it out
 # of a real `.git`, so this is the only place the install's own clone is
-# proved to have one), and whether the shadowing guard cleared the
-# leftover `npm link` symlink seeded for it below.
+# proved to have one), whether the shadowing guard cleared the
+# leftover `npm link` symlink seeded for it below, and whether the step's
+# Node pin works end to end - an `fnm install` of the one version from
+# ./fabrica-node-version, run on an activation's own PATH, and a generated
+# `fabrica` launcher that both names that version and, when actually run,
+# lands on it.
 #
 # Requires Docker. Usage: bash install.container-test.sh
 set -uo pipefail
@@ -644,23 +648,122 @@ inspector_binary_is_upstream_inspector() {
 assert "ci-linux: ~/go/bin/inspector carries github.com/inactdev/inspector build info" \
   inspector_binary_is_upstream_inspector
 
-# The npm equivalent: the bin entry has to resolve into the package npm
-# installed under the managed prefix, which is what proves the global
-# install landed there rather than the name happening to exist.
-fabrica_bin_resolves_into_the_managed_prefix() {
-  local resolved
-  resolved="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
-    'readlink -f "$HOME/.npm-global/bin/fabrica"' 2>/dev/null)"
-  case "$resolved" in
-    "$CI_HOME/.npm-global/lib/node_modules/fabrica/"*) return 0 ;;
+# The npm equivalent, read through the launcher the step writes over npm's
+# own shim (modules/fabrica-sync.sh's pin_fabrica_to_node). Not a
+# `readlink -f` of the bin entry any more, deliberately: that entry is no
+# longer a symlink, it is a generated `/bin/sh` launcher, and the path it
+# hands to node is on its own FABRICA_CLI line. Which is still the same
+# assertion underneath - the CLI it runs has to be a real file inside the
+# package npm installed under the managed prefix, which is what proves the
+# global install landed there rather than the name happening to exist.
+FABRICA_NODE_VERSION="$(tr -d '[:space:]' <"$SCRIPT_DIR/fabrica-node-version")"
+
+fabrica_bin_is_a_generated_launcher() {
+  docker exec -u "$CI_USER" "$CONTAINER" bash -c '
+    f="$HOME/.npm-global/bin/fabrica"
+    [ -f "$f" ] && [ ! -L "$f" ] && [ -x "$f" ]'
+}
+assert "ci-linux: ~/.npm-global/bin/fabrica is a generated launcher, not npm's shim" \
+  fabrica_bin_is_a_generated_launcher
+
+fabrica_launcher_runs_the_managed_cli() {
+  local entry
+  entry="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c \
+    'sed -n "s/^FABRICA_CLI=\"\(.*\)\"$/\1/p" "$HOME/.npm-global/bin/fabrica"' 2>/dev/null)"
+  case "$entry" in
+    "$CI_HOME/.npm-global/lib/node_modules/fabrica/"*)
+      docker exec -u "$CI_USER" -e ENTRY="$entry" "$CONTAINER" bash -c '[ -f "$ENTRY" ]' && return 0
+      echo "  launcher names a CLI that is not there: $entry" >&2
+      return 1
+      ;;
     *)
-      echo "  fabrica resolved to: ${resolved:-<not found>}" >&2
+      echo "  launcher names CLI: ${entry:-<none>}" >&2
       return 1
       ;;
   esac
 }
-assert "ci-linux: ~/.npm-global/bin/fabrica resolves into the managed npm prefix" \
-  fabrica_bin_resolves_into_the_managed_prefix
+assert "ci-linux: the launcher runs the CLI npm installed under the managed npm prefix" \
+  fabrica_launcher_runs_the_managed_cli
+
+# The point of the launcher: `fabrica` names its own Node version, so no
+# .node-version in whatever directory it is started from can change what
+# the orchestrator itself runs on. The version comes from the one shared
+# pin at the repository root, which work/bootstrap.sh reads for the work
+# Mac and modules/fabrica.nix reads for these hosts - so a bump is that
+# one file and this assertion follows it.
+fabrica_launcher_pins_the_node_version() {
+  docker exec -u "$CI_USER" -e WANT="$FABRICA_NODE_VERSION" "$CONTAINER" bash -c \
+    'grep -q "exec --using=$WANT node" "$HOME/.npm-global/bin/fabrica"'
+}
+assert "ci-linux: the launcher runs fabrica on Node $FABRICA_NODE_VERSION through fnm exec" \
+  fabrica_launcher_pins_the_node_version
+
+assert "ci-linux: the Fabrica step said it pinned fabrica to that version" \
+  grep -q "fabrica pinned to Node $FABRICA_NODE_VERSION" "$CI_HOST_LOG"
+
+# And the half of the pin that no text assertion can see: the activation
+# actually downloaded that version through fnm, so the launcher's command
+# line resolves to a Node that is there. Run from / rather than from the
+# container user's home so that no version file anywhere above the working
+# directory can be what answers. This is also the only check anywhere that
+# `fnm install` works at all from inside an activation - its PATH is store
+# packages plus the activation's own, and fnm is on it because
+# modules/fabrica.nix puts it there.
+fabrica_pinned_node_is_installed() {
+  local got
+  got="$(docker exec -u "$CI_USER" -e WANT="$FABRICA_NODE_VERSION" "$CONTAINER" bash -c '
+    . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh" 2>/dev/null
+    PATH="$HOME/.nix-profile/bin:$PATH"
+    cd /
+    fnm exec --using="$WANT" node --version' 2>/dev/null)"
+  [ "$got" = "v$FABRICA_NODE_VERSION" ] && return 0
+  echo "  fnm exec --using=$FABRICA_NODE_VERSION node --version said: ${got:-<nothing>}" >&2
+  return 1
+}
+assert "ci-linux: the activation installed Node $FABRICA_NODE_VERSION through fnm" \
+  fabrica_pinned_node_is_installed
+
+# And the launcher actually run, which no amount of reading it can show.
+# The copy under test is the generated file with one line changed - its
+# FABRICA_CLI pointed at a script that prints the Node version it got
+# instead of at Fabrica's CLI - started from a directory with a
+# .node-version of its own, with nothing of the user's profile on PATH
+# (`docker exec` gets the image's PATH, which is why every check above has
+# to source hm-session-vars.sh and this one deliberately does not).
+#
+# Three claims in the one run. That the generated text is a working
+# /bin/sh script at all, rather than one that merely contains the right
+# words. That its baked-in absolute path to fnm is enough on its own -
+# `fabrica` has to start from a launchd agent or a systemd unit, where no
+# login shell has put the profile's bin directory on PATH, which is the
+# whole reason the launcher names fnm by path rather than by name. And
+# that the pin, not the directory, is what decides the version: 99.99.99
+# is well formed and cannot exist, so a launcher that ever let a version
+# file answer fails here loudly instead of quietly fetching something.
+#
+# Fabrica's real CLI is deliberately not what gets run: this needs an
+# answer about which Node was selected, not a Fabrica command invoked
+# against a container with no credentials and no ~/.fabrica worth
+# speaking of.
+fabrica_launcher_runs_on_the_pinned_node() {
+  local got
+  got="$(docker exec -u "$CI_USER" "$CONTAINER" bash -c '
+    set -e
+    d="$(mktemp -d)"
+    printf "99.99.99\n" >"$d/.node-version"
+    printf "console.log(process.version)\n" >"$d/which-node.js"
+    sed "s|^FABRICA_CLI=.*|FABRICA_CLI=\"$d/which-node.js\"|" \
+      "$HOME/.npm-global/bin/fabrica" >"$d/fabrica"
+    chmod 755 "$d/fabrica"
+    out="$(cd "$d" && "$d/fabrica")"
+    rm -rf "$d"
+    printf "%s\n" "$out"' 2>/dev/null)"
+  [ "$got" = "v$FABRICA_NODE_VERSION" ] && return 0
+  echo "  the launcher reported Node: ${got:-<nothing>}" >&2
+  return 1
+}
+assert "ci-linux: running the launcher lands on Node $FABRICA_NODE_VERSION, whatever the directory says" \
+  fabrica_launcher_runs_on_the_pinned_node
 
 # Right binary, and it knows what it is. build-info.json is the one file
 # Fabrica's `prepare` writes, and all it puts there is `git rev-parse

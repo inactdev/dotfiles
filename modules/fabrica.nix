@@ -26,9 +26,29 @@ let
   fabricaSync = ./fabrica-sync.sh;
   managedBinGuard = ./managed-bin-guard.sh;
 
+  # The one Node version Fabrica is supported on, taken from the single
+  # plain-text pin at the repository root - the same file work/bootstrap.sh
+  # reads for the work Mac (see its own FABRICA_NODE_VERSION block). The
+  # sync script takes it as an argument and generates a launcher that runs
+  # Fabrica through `fnm exec --using=<version>`, so a repository's own
+  # .node-version cannot decide which Node the orchestrator itself gets on
+  # these hosts either.
+  #
+  # Read here and interpolated into the activation command line, rather
+  # than read by the script at run time, so the pinned version is part of
+  # this generation's derivation: bumping the file changes the activation
+  # script, which is what makes a switch notice the bump at all.
+  fabricaNodeVersion = lib.strings.trim (builtins.readFile ../fabrica-node-version);
+
   # git for the ls-remote, nodejs for npm (and for reading build info),
-  # coreutils for mkdir/tr/date/env/mv - all from the store, so the
-  # activation step behaves the same whatever a login shell has on PATH.
+  # coreutils for mkdir/tr/date/env/mv, fnm for the Node pin above - all
+  # from the store, so the activation step behaves the same whatever a
+  # login shell has on PATH.
+  #
+  # fnm is the one of these whose *own* state lives outside the store: it
+  # downloads the pinned Node into its default base directory under $HOME,
+  # which is exactly where the fnm that modules/core.nix puts in a login
+  # shell's PATH looks for it. Neither side sets FNM_DIR, so both agree.
   #
   # bash and zsh are here for the guard, which asks a fresh login shell of
   # each what `command -v fabrica` answers (see
@@ -41,6 +61,7 @@ let
     pkgs.nodejs
     pkgs.git
     pkgs.coreutils
+    pkgs.fnm
     pkgs.bash
     pkgs.zsh
   ];
@@ -55,6 +76,12 @@ in
 # `npm install -g` of the tarball - the script's own comments say why it
 # is three steps and why no shorter form works) when they differ, so the
 # cost of an ordinary switch is one `git ls-remote`.
+#
+# The step also pins which Node that copy runs on - exactly
+# ./fabrica-node-version, through `fnm exec --using`, regardless of the
+# .node-version of whatever directory `fabrica` is invoked from. That half
+# runs on every activation, including the ones that install nothing: see
+# modules/fabrica-sync.sh's pin_fabrica_to_node.
 #
 # `fabrica update` stays the day-to-day way to move Fabrica forward. This
 # step is the floor under it, not a replacement for it: it guarantees that
@@ -109,7 +136,8 @@ in
   #     that a return to either shape fails CI instead of passing it.
   home.activation.installFabrica = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
     run ${pkgs.coreutils}/bin/env PATH="${syncPath}:$PATH" ${pkgs.bash}/bin/bash \
-      ${fabricaSync} ${lib.escapeShellArg npmPrefix} ${managedBinGuard} \
+      ${fabricaSync} ${lib.escapeShellArg npmPrefix} \
+      ${lib.escapeShellArg fabricaNodeVersion} ${managedBinGuard} \
       || echo "fabrica-sync exited non-zero; continuing activation." >&2
   '';
 }
