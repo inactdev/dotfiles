@@ -17,31 +17,47 @@ decisions worth keeping:
 
 - **The uid has to be the primary user's, not the caller's.** The activate
   script runs as root, so `id -u` there is 0 and `gui/0` has no Dock in it.
-  The guard takes the user *name* as its only argument - the same string
-  `system.primaryUser` is set from, so the two cannot drift - and resolves
-  `id -u <name>` itself. Any future activation step that talks to a GUI
-  launchd domain needs the same treatment; `modules/inkwell-sync.sh` gets
-  away with a bare `id -u` only because home-manager's activation runs as
-  the user.
-- **"Running" means `launchctl print` reported a pid.** Same predicate
-  `modules/inkwell-sync.sh` already uses: `print` shows `pid = <n>` for a
-  running job and no pid for one that is merely loaded. Positive evidence
-  only, on purpose - a `print` that fails outright *and* a `print` with no
-  pid both count as not running, because asking launchd to start a Dock
+  The guard takes the user *name* as its only argument and resolves
+  `id -u <name>` itself. `configuration.nix` passes
+  `config.system.primaryUser` - read back off the option rather than the
+  same `user` argument written out a second time, so there is no second
+  copy of the name to keep in sync and the guard is always asked about
+  whichever account nix-darwin applied the defaults for. Any future
+  activation step that talks to a GUI launchd domain needs the same
+  treatment; `modules/inkwell-sync.sh` gets away with a bare `id -u` only
+  because home-manager's activation runs as the user.
+- **"Running" means `launchctl print` said so, in either of the two ways it
+  says it.** A pid (`pid = <n>`, reported for a running job and absent for
+  one that is merely loaded - the predicate
+  `modules/inkwell-sync.sh` already uses) *or* `state = running`, the same
+  answer in words. Either alone is enough, so a future launchctl that drops
+  or renames one field is still read correctly as long as it prints the
+  other; `state = not running` cannot match, because the pattern wants
+  `running` immediately after the equals sign. Positive evidence only, on
+  purpose - a `print` that fails outright *and* output carrying neither
+  signal both count as not running, because asking launchd to start a Dock
   that is already up costs nothing, while believing a dead Dock is alive is
   the whole bug. `kickstart` is therefore never given `-k`: killing a
   healthy Dock on every rebuild would recreate the failure instead of
-  fixing it.
+  fixing it. The worst an unreadable future format can do here is a
+  needless pair of start requests and a warning that was not true; it
+  cannot take a working Dock away.
 - **The kickstart's exit status is only a message.** What decides is
-  whether a pid appears afterwards, so a kickstart that reports failure
+  whether the Dock turns up afterwards, so a kickstart that reports failure
   while the Dock comes up anyway is a success, and one that reports success
   while nothing starts is not. launchctl's own words are passed on in the
   warning rather than interpreted.
-- **Two seconds, twice.** Each attempt looks for a pid at once, then waits
-  two seconds and looks again - which is also what makes "the Dock came
-  back by itself" a success rather than a false warning. The retry (one,
-  after that wait) is cheap next to leaving the machine without a Dock, and
-  four seconds in the worst case is the price of never crying wolf.
+- **Every wait is polled a second at a time, and the last one is
+  generous.** Each attempt looks for the Dock at once, then goes on looking
+  for up to two seconds; after the one retry, a further five-second grace
+  period asks launchd for nothing more and only keeps looking. Polling
+  rather than sleeping through a fixed block is what takes the race out of
+  the number: a Dock that is already back costs no wait at all, and a
+  loaded machine that needs four seconds is seen at four seconds instead of
+  being declared broken at two. Nine seconds is the worst case, and only on
+  a machine whose Dock really is gone - the price of never crying wolf,
+  since the one thing that would make the final warning wrong is a Dock
+  still on its way up.
 - **It exits 0 on every path, including the one where it gives up.**
   Everything else in the switch has already been applied by the time this
   runs; a non-zero exit would wrongly read as "the switch did not happen".
@@ -77,8 +93,10 @@ change to them would have been guesswork:
 
 Checking it without switching anything:
 `bash modules/dock-agent-guard.test.sh` covers the decisions against a
-mocked `launchctl`/`id`/`sleep` (including the retry, the give-up warning
-and the "came back by itself" path), and
+mocked `launchctl`/`id`/`sleep` (including both running signals and the
+`not running` near-miss, the retry, the whole nine-second waiting budget,
+the give-up warning and the "came back by itself, five seconds in" path),
+and
 `nix eval --impure --expr '(builtins.getFlake (toString ./.)).darwinConfigurations.personal-mac.config.system.activationScripts.postActivation.text'`
 shows the fragment that calls it. Neither runs the step: an activation
 step's command line is only ever interpreted by a shell at activation time

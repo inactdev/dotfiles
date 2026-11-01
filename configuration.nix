@@ -1,7 +1,8 @@
 {
-  user,
+  config,
   pkgs,
   lib,
+  user,
   ...
 }:
 
@@ -56,15 +57,19 @@
   # coreutils from the store for its `id` and `sleep`, because the activate
   # script's own PATH is minimal, with `env` between the interpreter and the
   # assignment rather than a bare leading PATH=..., which would be parsed as
-  # a command name (notes/20261021-activation-step-env-path.md). The primary
-  # user is passed by name because this runs as root and the Dock lives in
-  # that user's GUI domain, not root's.
+  # a command name (notes/20261021-activation-step-env-path.md). The user is
+  # passed by name because this runs as root and the Dock lives in that
+  # user's GUI domain, not root's - and it is `config.system.primaryUser`
+  # read back off the option set above, not the `user` argument again, so
+  # the guard is always asked about the same account nix-darwin applied the
+  # defaults for, with nothing to keep in sync by hand.
   system.activationScripts.postActivation.text = lib.mkAfter ''
     echo "setting the AC power profile to never sleep..." >&2
     /usr/bin/pmset -c sleep 0 disksleep 0
 
     ${pkgs.coreutils}/bin/env PATH="${pkgs.coreutils}/bin:$PATH" \
-      ${pkgs.bash}/bin/bash ${./modules/dock-agent-guard.sh} ${lib.escapeShellArg user}
+      ${pkgs.bash}/bin/bash ${./modules/dock-agent-guard.sh} \
+      ${lib.escapeShellArg config.system.primaryUser}
   '';
 
   nix-homebrew = {

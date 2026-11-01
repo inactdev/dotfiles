@@ -8,9 +8,12 @@
 # stub that answers `print` from a fixture, records every call, and decides
 # for itself when a `kickstart` is allowed to work; `id` is a stub that maps
 # one name to one uid, so the test never depends on who is running it; and
-# `sleep` is a stub that logs the duration it was asked for and returns at
-# once, which is how the two-second settle wait is checkable without a suite
-# that waits four seconds to prove it. The script's launchctl candidate list
+# `sleep` is a stub that logs the duration it was asked for, counts the call
+# and returns at once, which is how the guard's whole waiting budget - the
+# two settle waits and the grace period after them, each polled a second at
+# a time - is checkable in a suite that finishes instantly, and how a Dock
+# that comes back partway through a wait can be staged at all. The script's
+# launchctl candidate list
 # is pointed at the stub, so the "no launchctl anywhere" case answers the
 # same on a Mac as on Linux.
 #
@@ -94,7 +97,8 @@ setup() {
   printf '0\n' >"$STATE/kickstart-count"
   printf '0\n' >"$STATE/kickstart-works-on"
   printf '0\n' >"$STATE/kickstart-lies"
-  printf '0\n' >"$STATE/sleep-starts-dock"
+  printf '0\n' >"$STATE/sleep-count"
+  printf '0\n' >"$STATE/sleep-starts-dock-on"
   stub_sleep
   stub_id
   make_launchctl
@@ -104,14 +108,19 @@ teardown() {
   rm -rf "$TMP"
 }
 
-# `sleep <seconds>`: records what it was asked to wait for and returns at
-# once. Optionally stands in for a Dock that comes back by itself while the
-# guard is waiting.
+# `sleep <seconds>`: records what it was asked to wait for, counts the call,
+# and returns at once - so a suite that pins the guard's whole waiting budget
+# still finishes instantly. $STATE/sleep-starts-dock-on stands in for a Dock
+# that turns up by itself partway through the waiting: the Dock starts
+# running on that numbered sleep, and never if it is 0.
 stub_sleep() {
   cat >"$MOCK_DIR/sleep" <<'STUB'
 #!/bin/sh
 echo "sleep $*" >>"$STATE/calls"
-if [ "$(cat "$STATE/sleep-starts-dock")" = 1 ]; then
+count=$(($(cat "$STATE/sleep-count") + 1))
+echo "$count" >"$STATE/sleep-count"
+starts_on=$(cat "$STATE/sleep-starts-dock-on")
+if [ "$starts_on" != 0 ] && [ "$count" -ge "$starts_on" ]; then
   echo 1 >"$STATE/running"
 fi
 exit 0
@@ -201,6 +210,8 @@ run_guard() {
   GUARD_ERR=$(cat "$TMP/err")
   CALL_LOG=$(cat "$CALLS")
   KICKSTARTS=$(grep -c "launchctl kickstart" "$CALLS")
+  # Every wait the guard took, as one-second polls.
+  WAITS=$(grep -c "^sleep 1$" "$CALLS")
 }
 
 test_a_running_dock_is_left_alone() {
@@ -229,8 +240,47 @@ test_a_stopped_dock_is_started() {
   assert_contains "says the Dock was missing" "$GUARD_OUT" "the Dock is not running after the defaults step"
   assert_contains "and that it is back" "$GUARD_OUT" "the Dock is running again"
   assert_eq "with nothing on stderr" "" "$GUARD_ERR"
-  assert_eq "and never waits, because the pid was there at once" 0 \
-    "$(grep -c '^sleep' "$CALLS")"
+  assert_eq "and never waits, because the pid was there at once" 0 "$WAITS"
+  teardown
+}
+
+test_a_state_line_without_a_pid_counts_as_running() {
+  setup
+  # The same answer in words rather than as a pid - which is what a future
+  # launchctl that stopped printing pids would leave behind. Either signal
+  # is enough, so this must not read as a stopped Dock.
+  printf 'com.apple.Dock.agent = {\n\tstate = running\n\tactive count = 1\n}\n' \
+    >"$STATE/print-running"
+  run_guard "$USER_NAME"
+
+  assert_eq "exits 0" 0 "$GUARD_RC"
+  assert_eq "never asks launchd to start anything" 0 "$KICKSTARTS"
+  assert_eq "and stays silent" "" "$GUARD_OUT$GUARD_ERR"
+  teardown
+}
+
+test_a_pid_without_a_state_line_counts_as_running() {
+  setup
+  printf 'com.apple.Dock.agent = {\n\tactive count = 1\n\tpid = 4213\n}\n' \
+    >"$STATE/print-running"
+  run_guard "$USER_NAME"
+
+  assert_eq "never asks launchd to start anything" 0 "$KICKSTARTS"
+  assert_eq "and stays silent" "" "$GUARD_OUT$GUARD_ERR"
+  teardown
+}
+
+test_state_not_running_is_never_read_as_running() {
+  setup
+  printf '0\n' >"$STATE/running"
+  printf '1\n' >"$STATE/kickstart-works-on"
+  # The word "running" is in this output, as the tail of "not running" - the
+  # one thing the state signal must not be fooled by.
+  printf 'com.apple.Dock.agent = {\n\tstate = not running\n}\n' >"$STATE/print-stopped"
+  run_guard "$USER_NAME"
+
+  assert_contains "starts the Dock" "$CALL_LOG" "launchctl kickstart gui/$USER_UID/$LABEL"
+  assert_contains "and says so" "$GUARD_OUT" "the Dock is running again"
   teardown
 }
 
@@ -276,15 +326,15 @@ test_a_pidless_service_counts_as_stopped() {
 test_a_dock_that_comes_back_during_the_wait_is_enough() {
   setup
   printf '0\n' >"$STATE/running"
-  # Nothing the guard asks for works, but the Dock turns up by itself while
-  # it waits - which is a success, not a warning.
+  # Nothing the guard asks for works, but the Dock turns up by itself one
+  # second into the wait - which is a success, not a warning.
   printf '0\n' >"$STATE/kickstart-works-on"
-  printf '1\n' >"$STATE/sleep-starts-dock"
+  printf '1\n' >"$STATE/sleep-starts-dock-on"
   run_guard "$USER_NAME"
 
   assert_eq "exits 0" 0 "$GUARD_RC"
   assert_eq "asked launchd once" 1 "$KICKSTARTS"
-  assert_contains "waited two seconds for it" "$CALL_LOG" "sleep 2"
+  assert_eq "stopped waiting the moment it turned up" 1 "$WAITS"
   assert_contains "and reports it is back" "$GUARD_OUT" "the Dock is running again"
   assert_eq "with no warning" "" "$GUARD_ERR"
   teardown
@@ -298,9 +348,29 @@ test_a_dock_that_needs_a_second_ask() {
 
   assert_eq "exits 0" 0 "$GUARD_RC"
   assert_eq "retries exactly once" 2 "$KICKSTARTS"
-  assert_contains "after a two-second wait" "$CALL_LOG" "sleep 2"
+  assert_eq "after the two-second settle wait, polled a second at a time" 2 "$WAITS"
   assert_contains "says it took a second ask" "$GUARD_OUT" "it took a second ask"
   assert_eq "and warns about nothing" "" "$GUARD_ERR"
+  teardown
+}
+
+test_a_slow_dock_is_waited_for_rather_than_warned_about() {
+  setup
+  printf '0\n' >"$STATE/running"
+  # Neither kickstart appears to work, and the Dock only reports itself on
+  # the fifth second of waiting - past both settle waits, inside the grace
+  # period that follows the retry. A machine that slow must be told its Dock
+  # is back, not handed a command to run by hand.
+  printf '0\n' >"$STATE/kickstart-works-on"
+  printf '5\n' >"$STATE/sleep-starts-dock-on"
+  run_guard "$USER_NAME"
+
+  assert_eq "exits 0" 0 "$GUARD_RC"
+  assert_eq "having asked launchd twice and no more" 2 "$KICKSTARTS"
+  assert_eq "and waited five seconds in all" 5 "$WAITS"
+  assert_contains "reports the Dock as back" "$GUARD_OUT" "the Dock is running again"
+  assert_contains "saying it took longer than expected" "$GUARD_OUT" "a moment longer than expected"
+  assert_eq "with no warning at all" "" "$GUARD_ERR"
   teardown
 }
 
@@ -325,6 +395,10 @@ test_a_dock_that_cannot_be_started_warns_and_never_fails_the_switch() {
 
   assert_eq "never fails the switch" 0 "$GUARD_RC"
   assert_eq "having asked launchd twice and then stopped" 2 "$KICKSTARTS"
+  # Two seconds per attempt plus the five-second grace period that follows
+  # the retry: the whole waiting budget, pinned so it cannot shrink by
+  # accident and start warning about Docks that were only slow.
+  assert_eq "after nine seconds of looking for it" 9 "$WAITS"
   assert_contains "says plainly that the Dock is down" "$GUARD_ERR" \
     "the Dock is not running and could not be started"
   assert_contains "passes launchctl's own answer on" "$GUARD_ERR" "No such process"
@@ -391,11 +465,15 @@ test_no_user_argument_is_a_usage_error() {
 
 test_a_running_dock_is_left_alone
 test_a_stopped_dock_is_started
+test_a_state_line_without_a_pid_counts_as_running
+test_a_pid_without_a_state_line_counts_as_running
+test_state_not_running_is_never_read_as_running
 test_the_primary_users_uid_is_used_not_the_callers
 test_a_service_launchd_no_longer_knows_counts_as_stopped
 test_a_pidless_service_counts_as_stopped
 test_a_dock_that_comes_back_during_the_wait_is_enough
 test_a_dock_that_needs_a_second_ask
+test_a_slow_dock_is_waited_for_rather_than_warned_about
 test_a_kickstart_that_reports_failure_but_starts_the_dock_is_a_success
 test_a_dock_that_cannot_be_started_warns_and_never_fails_the_switch
 test_an_unknown_primary_user_is_reported_and_survivable
