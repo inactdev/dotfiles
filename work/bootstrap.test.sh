@@ -599,6 +599,91 @@ test_brewfile_provides_node_and_go() {
   teardown
 }
 
+# herdr has to be the same package personal-mac installs, not a second
+# way of getting it: `brew "herdr"` here and `"herdr"` in
+# configuration.nix's homebrew.brews are both the homebrew-core formula
+# (no tap, and not a cask), so `brew upgrade` updates it on either Mac.
+# A cask line, or a curl-the-installer step in the bootstrap, would put an
+# unmanaged binary beside the one captain-triaged manifest - and herdr's
+# own docs rule out `herdr update` for a Homebrew install, so the two
+# would then disagree about who updates it.
+test_brewfile_installs_the_same_herdr_personal_mac_does() {
+  setup
+  brewfile=$(cat "$REPO_DIR/work/Brewfile")
+  assert_contains "Brewfile installs herdr as a formula" "$brewfile" 'brew "herdr"'
+  case "$brewfile" in
+    *'cask "herdr"'*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - herdr is a formula, not a cask"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - herdr is not declared as a cask"
+      ;;
+  esac
+  # The personal-mac half, asserted from here for the same reason
+  # test_nix_hosts_read_the_same_pin lives in this suite: this is where
+  # the work host's manifest is owned, and the point is that the two
+  # hosts name one package rather than drifting into two.
+  brews=$(sed -n '/brews = \[/,/\];/p' "$REPO_DIR/configuration.nix")
+  assert_contains "personal-mac installs the same bare formula" "$brews" '"herdr"'
+  casks=$(sed -n '/casks = \[/,/\];/p' "$REPO_DIR/configuration.nix")
+  case "$casks" in
+    *herdr*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - personal-mac must install herdr as a formula, not a cask"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - personal-mac declares no herdr cask either"
+      ;;
+  esac
+  teardown
+}
+
+# home/.config/herdr is declaration-only on every host in this repo (see
+# AGENTS.md): the bootstrap installs the formula and symlinks the config
+# directory, and must never run the binary. `herdr server
+# reload-agent-manifests`, `herdr tab rename` and friends mutate the live
+# daemon's state, so one of them in a bootstrap - or in a test run of it -
+# repaints the real tabs and panes of whoever is logged in.
+#
+# A static check on the source, like test_no_username_hardcoded_in_source:
+# the hermetic PATH means a test run could not reach a real herdr anyway,
+# which is exactly why the invariant has to be asserted about the code.
+# Comments are stripped first so prose about herdr's commands (this
+# repository has plenty) can never trip it, and the pattern only matches a
+# subcommand - a future `command -v herdr >/dev/null` presence probe is
+# not an invocation of it.
+test_bootstrap_never_runs_herdr() {
+  src=$(grep -v '^[[:space:]]*#' "$SCRIPT" || true)
+  if printf '%s\n' "$src" | grep -Eq '(^|[^[:alnum:]_./-])herdr[[:space:]]+[a-z]'; then
+    fail_count=$((fail_count + 1))
+    echo "FAIL - work/bootstrap.sh runs a herdr subcommand; herdr is declaration-only:"
+    printf '%s\n' "$src" | grep -En '(^|[^[:alnum:]_./-])herdr[[:space:]]+[a-z]'
+  else
+    pass_count=$((pass_count + 1))
+    echo "ok - the bootstrap never runs herdr, it only installs and configures it"
+  fi
+}
+
+# The case this host newly walks into: a work Mac that already had herdr
+# from herdr's own installer has a real ~/.config/herdr *directory* with
+# the owner's config in it. The generic backup test above covers a
+# pre-existing file; this covers a directory, which is what link_with_backup
+# must move aside rather than write through.
+test_preexisting_herdr_config_dir_is_backed_up() {
+  setup
+  mkdir -p "$HOME/.config/herdr"
+  printf 'mine = true\n' >"$HOME/.config/herdr/config.toml"
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  assert_eq "the owner's own herdr config is kept" "mine = true" \
+    "$(cat "$HOME/.config/herdr.pre-dotfiles-backup/config.toml")"
+  assert_eq "and ~/.config/herdr is now our symlink" "$REPO_DIR/home/.config/herdr" \
+    "$(readlink "$HOME/.config/herdr")"
+  teardown
+}
+
 # work/zshrc is shared verbatim with the codespace-work posture, which has
 # no fnm at all - so the eval has to be guarded, exactly like rbenv's.
 test_zshrc_loads_fnm_guarded() {
@@ -1043,6 +1128,9 @@ test_existing_git_identity_is_preserved_and_not_pending
 test_macos_defaults_failure_warns_and_continues
 test_brew_bundle_invoked_with_work_brewfile
 test_brewfile_provides_node_and_go
+test_brewfile_installs_the_same_herdr_personal_mac_does
+test_bootstrap_never_runs_herdr
+test_preexisting_herdr_config_dir_is_backed_up
 test_zshrc_loads_fnm_guarded
 test_brewfile_does_not_install_docker_desktop
 test_docker_present_is_not_flagged_pending
