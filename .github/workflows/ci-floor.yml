@@ -34,20 +34,23 @@ jobs:
 
   # run.test.sh, install.test.sh, work/codespace-bootstrap.test.sh,
   # home/.local/bin/dotfiles-auto-apply.test.sh, the four
-  # modules/inkwell-*.test.sh suites and modules/managed-key-file.test.sh are
-  # pure bash logic tests (host
+  # modules/inkwell-*.test.sh suites, modules/managed-key-file.test.sh and
+  # modules/dock-agent-guard.test.sh are pure bash logic tests (host
   # selection, posture detection, the codespace-work apt/npm/binary install
   # logic against mocked apt-get/curl/npm, the self-apply job against a
   # mocked git/run.sh, the Inkwell backend's build, launchd-agent,
   # systemd-service, key-file and tailscale-serve decisions against a mocked
-  # git/go/launchctl/systemctl/tailscale/stat, and the one-key-file step
-  # against nothing but two paths in a scratch directory) with no macOS-only
-  # dependency - Ubuntu is cheaper and sufficient. Two of the Inkwell suites
-  # test scripts that only ever run on personal-mac and two of them scripts
-  # that only ever run on home-linux, and both are fine for the same reason:
-  # every host-specific command they reach is one of the mocks, and running
-  # them anywhere a real launchd, a real systemd user manager or a real
-  # tailnet could answer is precisely what they must not do. All of them
+  # git/go/launchctl/systemctl/tailscale/stat, the one-key-file step against
+  # nothing but two paths in a scratch directory, and the
+  # is-the-Dock-still-running decision against a mocked launchctl/id/sleep)
+  # with no macOS-only dependency - Ubuntu is cheaper and sufficient. Two of
+  # the Inkwell suites test scripts that only ever run on personal-mac, two
+  # of them scripts that only ever run on home-linux, and the Dock guard's
+  # suite a script that only ever runs on personal-mac too; all of them are
+  # fine for the same reason: every host-specific command they reach is one
+  # of the mocks, and running them anywhere a real launchd, a real systemd
+  # user manager or a real tailnet could answer is precisely what they must
+  # not do. All of them
   # isolate HOME internally, but each step also sets a scratch HOME itself
   # as defense in depth: run.sh once repointed ~/.dotfiles unconditionally
   # (issue #9, since fixed by its link_dotfiles guard), so this job must
@@ -75,6 +78,8 @@ jobs:
         run: HOME="$(mktemp -d)" bash modules/inkwell-linux-sync.test.sh
       - name: bash modules/managed-key-file.test.sh
         run: HOME="$(mktemp -d)" bash modules/managed-key-file.test.sh
+      - name: bash modules/dock-agent-guard.test.sh
+        run: HOME="$(mktemp -d)" bash modules/dock-agent-guard.test.sh
 
   # work/bootstrap.sh only ever runs on the work Mac (see AGENTS.md), and
   # its `#!/bin/sh` shebang resolves to a genuinely different shell on
