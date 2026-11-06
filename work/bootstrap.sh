@@ -31,13 +31,13 @@ set -euo pipefail
 # Collected here so the final summary can tell the captain what still
 # needs a human, instead of silently doing nothing.
 #
-# Everything from FABRICA_PENDING down is read only by this file's own
+# Everything from BREW_CLEANUP_PENDING down is read only by this file's own
 # print_summary. work/codespace-bootstrap.sh defines its own print_summary
-# that shadows this one and installs none of these tools nor looks for
-# Docker, so sourcing this file leaves it with a handful of counters it
-# ignores - deliberately, rather than threading them through the shared
-# print_git_gh_pending, which would put work-Mac-only state into the
-# codespace summary.
+# that shadows this one, runs no Homebrew at all, installs none of these
+# tools and never looks for Docker, so sourcing this file leaves it with a
+# handful of counters it ignores - deliberately, rather than threading them
+# through the shared print_git_gh_pending, which would put work-Mac-only
+# state into the codespace summary.
 #
 # The last two are the only items in the whole bootstrap that no script is
 # allowed to finish: `claude setup-token` is a browser OAuth flow, and
@@ -46,6 +46,7 @@ set -euo pipefail
 GIT_IDENTITY_PENDING=0
 MACOS_DEFAULTS_PENDING=0
 GH_LOGIN_PENDING=0
+BREW_CLEANUP_PENDING=0
 FABRICA_PENDING=0
 INSPECTOR_PENDING=0
 NODE_PIN_PENDING=0
@@ -142,11 +143,47 @@ install_homebrew() {
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 }
 
+# work/Brewfile is this host's Homebrew list in both directions: `cleanup`
+# removes what it doesn't name, `bundle` installs what it does. Without the
+# first half - which is all this did until now - Homebrew here only ever
+# grew, while personal-mac has retracted its own list since it was written
+# (configuration.nix's homebrew.onActivation.cleanup).
+#
+# Plain `cleanup`, never `--zap`: for a cask, `--zap` also deletes that
+# app's settings and data, which is far too much to do unattended on a
+# company machine. An uninstall-only removal of something that turns out to
+# have been wanted is recoverable by reinstalling it; a zapped one is not.
+# This is a deliberate divergence from personal-mac, whose cleanup *is*
+# "zap" - see notes/20261106-work-brewfile-cleanup.md.
+#
+# --force because `cleanup` without it only lists what it would remove, and
+# a non-interactive bootstrap has nobody to confirm with. Its output is left
+# on stdout rather than captured, which is what reports each removal as it
+# happens.
+#
+# Two reasons cleanup is its own command *before* the install rather than
+# `brew bundle --cleanup --file=...`, which is documented as equivalent to
+# `cleanup --force` but runs it after installing, under one exit status:
+#
+#   - A cleanup failure must never cost this host its listed packages, so
+#     it warns, lands in the summary and falls through to the install.
+#     Sharing an exit status with the install makes that impossible.
+#   - cleanup runs `brew autoremove`, which upstream has an open report of
+#     taking out packages the Brewfile does list (Homebrew/brew#21350).
+#     With cleanup first, the install right behind it puts anything
+#     over-removed straight back; the other order leaves it missing.
 install_packages() {
-  local repo="$1" brew
+  local repo="$1" brew brewfile
   brew="$(brew_bin)"
+  brewfile="$repo/work/Brewfile"
+  echo "==> removing packages not in work/Brewfile (brew bundle cleanup)"
+  if ! "$brew" bundle cleanup --force --file="$brewfile"; then
+    BREW_CLEANUP_PENDING=1
+    echo "    WARN: brew bundle cleanup --force --file=$brewfile failed, so" >&2
+    echo "          packages this host no longer lists may still be installed" >&2
+  fi
   echo "==> installing packages (brew bundle)"
-  "$brew" bundle --file="$repo/work/Brewfile"
+  "$brew" bundle --file="$brewfile"
 }
 
 # Replaces $target with a symlink to $source, backing up a pre-existing
@@ -725,7 +762,7 @@ print_summary() {
     [ "$GH_LOGIN_PENDING" = 1 ] || [ "$FABRICA_PENDING" = 1 ] ||
     [ "$INSPECTOR_PENDING" = 1 ] || [ "$DOCKER_PENDING" = 1 ] ||
     [ "$NODE_PIN_PENDING" = 1 ] || [ "$FABRICA_HOME_PENDING" = 1 ] ||
-    [ "$CLAUDE_TOKEN_PENDING" = 1 ]; then
+    [ "$CLAUDE_TOKEN_PENDING" = 1 ] || [ "$BREW_CLEANUP_PENDING" = 1 ]; then
     echo "Still needs attention:"
     print_git_gh_pending
     # The two human-only items first: on a machine that installed cleanly
@@ -751,6 +788,10 @@ print_summary() {
     fi
     if [ "$INSPECTOR_PENDING" = 1 ]; then
       echo "  - Inspector: not installed; see the warning above, then re-run this bootstrap"
+    fi
+    if [ "$BREW_CLEANUP_PENDING" = 1 ]; then
+      echo "  - Homebrew still has packages work/Brewfile does not list: brew bundle"
+      echo "      cleanup failed; see the warning above, then re-run this bootstrap"
     fi
     if [ "$MACOS_DEFAULTS_PENDING" = 1 ]; then
       echo "  - some macOS defaults were rejected, likely by MDM policy"

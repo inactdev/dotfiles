@@ -43,9 +43,18 @@ fail_count=0
 # the identity assertions.
 mock_bin() {
   dir=$1
+  # brew: every invocation is logged in order, which is how the removal
+  # half and the install half of install_packages are told apart and shown
+  # to run in that order. $FIXTURES/brew_cleanup_fail fails `bundle
+  # cleanup` and nothing else - the one scenario that matters here is "the
+  # removal went wrong, the install must still happen".
   cat >"$dir/brew" <<'MOCK'
 #!/bin/sh
 echo "brew $*" >>"$FIXTURES/brew.log"
+if [ -f "$FIXTURES/brew_cleanup_fail" ] && [ "${1:-}" = bundle ] && [ "${2:-}" = cleanup ]; then
+  echo "Error: Failed to cleanup" >&2
+  exit 1
+fi
 exit 0
 MOCK
   # npm: logs every invocation. `pack --pack-destination <dir>` leaves one
@@ -455,6 +464,60 @@ test_brew_bundle_invoked_with_work_brewfile() {
   setup
   run_bootstrap >"$TMP/out.log" 2>&1 || true
   assert_contains "brew bundle called with work/Brewfile" "$(cat "$FIXTURES/brew.log")" "bundle --file=$REPO_DIR/work/Brewfile"
+  teardown
+}
+
+# The Brewfile is this host's list in both directions, so the removal half
+# has to be there, has to be forced (unforced `cleanup` only prints what it
+# would remove), has to be pointed at the same Brewfile the install uses,
+# and has to run first - with the install behind it, anything cleanup's
+# `brew autoremove` step over-removes comes straight back.
+#
+# `--zap` is asserted absent from the whole brew log, not from the script's
+# source: the source says the word in the comment explaining why it isn't
+# passed.
+test_brew_bundle_cleanup_removes_what_the_brewfile_omits() {
+  setup
+  run_bootstrap >"$TMP/out.log" 2>&1 || true
+  log=$(cat "$FIXTURES/brew.log")
+  assert_contains "cleanup forced, against the work Brewfile" "$log" \
+    "bundle cleanup --force --file=$REPO_DIR/work/Brewfile"
+  case "$log" in
+    *zap*)
+      fail_count=$((fail_count + 1))
+      echo "FAIL - cleanup must never be passed --zap: it deletes each removed app's settings and data"
+      ;;
+    *)
+      pass_count=$((pass_count + 1))
+      echo "ok - cleanup is never passed --zap"
+      ;;
+  esac
+  cleanup_at=$(grep -n 'bundle cleanup' "$FIXTURES/brew.log" | head -n 1 | cut -d: -f1)
+  install_at=$(grep -n -- "bundle --file=" "$FIXTURES/brew.log" | head -n 1 | cut -d: -f1)
+  if [ -n "$cleanup_at" ] && [ -n "$install_at" ] && [ "$cleanup_at" -lt "$install_at" ]; then
+    pass_count=$((pass_count + 1))
+    echo "ok - cleanup runs before the install"
+  else
+    fail_count=$((fail_count + 1))
+    printf 'FAIL - cleanup must run before the install\n  brew log:\n%s\n' "$log"
+  fi
+  teardown
+}
+
+# A cleanup problem must never be what leaves this Mac without its listed
+# packages, so it warns by name, lands in the summary and falls through to
+# the install - the whole bootstrap still exits 0.
+test_brew_bundle_cleanup_failure_warns_and_still_installs() {
+  setup
+  : >"$FIXTURES/brew_cleanup_fail"
+  if out=$(run_bootstrap 2>&1); then code=0; else code=$?; fi
+  assert_eq "bootstrap still exits 0 when cleanup fails" "0" "$code"
+  assert_contains "warns, naming the command that failed" "$out" \
+    "WARN: brew bundle cleanup --force --file=$REPO_DIR/work/Brewfile failed"
+  assert_contains "the install still ran" "$(cat "$FIXTURES/brew.log")" \
+    "bundle --file=$REPO_DIR/work/Brewfile"
+  assert_contains "summary flags the packages left behind" "$out" \
+    "Homebrew still has packages work/Brewfile does not list"
   teardown
 }
 
@@ -1127,6 +1190,8 @@ test_no_tty_no_identity_never_falls_back_to_personal_email
 test_existing_git_identity_is_preserved_and_not_pending
 test_macos_defaults_failure_warns_and_continues
 test_brew_bundle_invoked_with_work_brewfile
+test_brew_bundle_cleanup_removes_what_the_brewfile_omits
+test_brew_bundle_cleanup_failure_warns_and_still_installs
 test_brewfile_provides_node_and_go
 test_brewfile_installs_the_same_herdr_personal_mac_does
 test_bootstrap_never_runs_herdr

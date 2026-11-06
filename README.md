@@ -515,20 +515,24 @@ Nix, no home-manager. Everything for that path lives under `work/`:
 
 - `work/Brewfile` - the exact formula/cask list for the work host, and the
   intent Codespaces' work posture mirrors via apt/npm/release binaries
-  (below). Docker Desktop is deliberately *not* in it - see "Docker
-  Desktop" below. `fnm` is the one entry Codespaces deliberately does not
-  mirror - see "Node for Fabrica" below.
-- `work/bootstrap.sh` - installs Homebrew if missing, runs `brew bundle`,
-  symlinks the same `home/.config/*` and `AGENTS.md` files the Nix path
-  uses plus ghostty (no wezterm - see below), links `work/zshrc` and
-  `work/claude-settings.json` into place, configures git (identity is
-  prompted for, never defaulted), and applies the macOS `defaults` the Nix
-  path also sets. Idempotent - safe to re-run any time, including via
-  `./run.sh rebuild` once `work` is the remembered/chosen host. It also
-  installs Fabrica and Inspector, pins the Node version Fabrica runs on,
-  places `~/.fabrica`, and checks for Docker Desktop and Fabrica's Claude
-  Code token without installing or fetching either (all see below).
-  Everything in it except the Homebrew/`brew bundle` install step, the
+  (below). It is the list in both directions: the work Mac keeps exactly
+  what this file names, nothing more - see "Exactly the Brewfile" below.
+  Docker Desktop is deliberately *not* in it - see "Docker Desktop" below.
+  `fnm` is the one entry Codespaces deliberately does not mirror - see
+  "Node for Fabrica" below.
+- `work/bootstrap.sh` - installs Homebrew if missing, removes any Homebrew
+  package the Brewfile doesn't list and then installs the ones it does
+  (`brew bundle cleanup --force` then `brew bundle` - see "Exactly the
+  Brewfile" below), symlinks the same `home/.config/*` and `AGENTS.md`
+  files the Nix path uses plus ghostty (no wezterm - see below), links
+  `work/zshrc` and `work/claude-settings.json` into place, configures git
+  (identity is prompted for, never defaulted), and applies the macOS
+  `defaults` the Nix path also sets. Idempotent - safe to re-run any time,
+  including via `./run.sh rebuild` once `work` is the remembered/chosen
+  host. It also installs Fabrica and Inspector, pins the Node version
+  Fabrica runs on, places `~/.fabrica`, and checks for Docker Desktop and
+  Fabrica's Claude Code token without installing or fetching either (all
+  see below). Everything in it except the Homebrew/`brew bundle` steps, the
   macOS `defaults`, and the Fabrica/Inspector steps is plain shell with
   nothing macOS-specific about it, and is sourced (not copied) by
   `work/codespace-bootstrap.sh` below - see that file's own header comment
@@ -682,12 +686,55 @@ runs herdr, and nothing should. A `herdr server reload-agent-manifests`,
 bootstrap or a test run repaints the real tabs and panes of whoever is
 logged in.
 
+### Exactly the Brewfile
+
+The work Mac keeps exactly the packages `work/Brewfile` names - no more.
+`install_packages` runs the removing half first and the installing half
+second:
+
+```sh
+brew bundle cleanup --force --file=<repo>/work/Brewfile
+brew bundle --file=<repo>/work/Brewfile
+```
+
+so a formula or cask that is dropped from the Brewfile, or that someone
+`brew install`ed by hand, is gone after the next bootstrap or
+`./run.sh rebuild`. This is the work host catching up to what the personal
+Mac has always done through `configuration.nix`'s
+`homebrew.onActivation.cleanup`.
+
+Two deliberate choices, both documented in
+`notes/20261106-work-brewfile-cleanup.md`:
+
+- **Plain `cleanup`, never `--zap`.** For a cask, `--zap` also deletes that
+  app's settings and data. On a company machine that is someone's real
+  work, so removals here are uninstall-only - reinstallable if one turns
+  out to have been wanted. This is an intentional divergence from
+  personal-mac, which does zap; don't align the two.
+- **Cleanup first, and never fatal.** `--force` is required because an
+  unforced `cleanup` only prints what it would remove, and a bootstrap has
+  nobody to confirm with. Each removal is printed as it happens. If cleanup
+  itself fails, the bootstrap warns, carries straight on to the install and
+  reports the leftovers in its closing summary - a cleanup problem must
+  never be the reason this Mac ends up without its listed packages.
+  Running it before the install also means anything cleanup's
+  `brew autoremove` step over-removes is reinstalled immediately.
+
+Work Mac only: `install_packages` is not one of the functions Codespaces'
+work posture shares out of `work/bootstrap.sh`, and that path installs
+through apt/npm/release binaries and removes nothing - correct for a
+container that gets thrown away rather than kept in shape.
+
 ### Docker Desktop
 
 Docker is installed on the work Mac through the company's Self-Service
 app, never Homebrew, so `work/Brewfile` has no `docker-desktop` cask and
 must not grow one: `brew bundle` would otherwise either fight the managed
-copy or install a second, unmanaged one alongside it.
+copy or install a second, unmanaged one alongside it. Its absence from the
+Brewfile costs it nothing now that the bootstrap also *removes* what the
+Brewfile omits (above): `brew bundle cleanup` only considers what Homebrew
+itself installed, and the Self-Service copy never was a Homebrew cask here,
+so cleanup has nothing to match it against.
 
 The bootstrap only *looks* for it, as its last step: `docker` on PATH and
 `/Applications/Docker.app` present. Both halves, because either alone is a
@@ -706,6 +753,8 @@ Codespaces has no Docker Desktop to install either way.
 Deliberately excluded from the work host, by captain decision:
 wezterm, opensuperwhisper, ollama, cloudflared, arp-scan,
 imagemagick, graphviz, tree-sitter, cmake, make, watchman, fzf, nixfmt.
+Excluded now means removed, not merely not-installed: any of these already
+on the machine is uninstalled by the cleanup step above.
 
 The bootstrap ends with a short summary of anything it couldn't finish,
 with the two human-only steps first (Fabrica's Claude Code token, a missing
@@ -713,7 +762,8 @@ Docker Desktop), followed by anything that genuinely went wrong: GitHub
 login, MDM-locked macOS settings, a still-unset git identity, a Fabrica or
 Inspector install that didn't land, a Node version that didn't download or
 a `fabrica` that couldn't be pinned to it, a `~/.fabrica` that couldn't be
-created.
+created, Homebrew packages the Brewfile doesn't list that `brew bundle
+cleanup` couldn't remove.
 
 ## GitHub Codespaces
 
@@ -785,7 +835,7 @@ opened for it will clone this repo and run `install.sh` on creation.
 ## Tests
 
 - `bash run.test.sh` - host selection logic in `run.sh` against a mocked `uname`, its `~/.dotfiles` symlink guards (`validate_dir`, `link_dotfiles`) against a scratch `$HOME`, and that a successful rebuild records the commit it applied where the self-update job reads it.
-- `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh`/`npm`/`go` on a hermetic `$HOME`, plus a `git` that is real for everything except `clone` (so the Fabrica install's clone of a private repository is exercised without ever reaching the network). Covers the clone/pack/`npm install -g` chain, the `go install ...@latest` command and the environment it runs under, the fact that npm is never handed a `github:` spec, and that a refused clone, a failing `npm` or a failing `go` each warn, report themselves in the summary, clean up their temp directory and still leave the bootstrap exiting 0. It also owns the Node pin: every version assertion reads `./fabrica-node-version`, and it asserts that neither `work/bootstrap.sh` nor the Nix side (`modules/fabrica.nix`, `modules/fabrica-sync.sh`) carries a second copy of the number.
+- `sh work/bootstrap.test.sh` - the work Mac's install/link/configure steps, against mocked `brew`/`defaults`/`killall`/`gh`/`npm`/`go` on a hermetic `$HOME`, plus a `git` that is real for everything except `clone` (so the Fabrica install's clone of a private repository is exercised without ever reaching the network). Covers the clone/pack/`npm install -g` chain, the `go install ...@latest` command and the environment it runs under, the fact that npm is never handed a `github:` spec, and that a refused clone, a failing `npm` or a failing `go` each warn, report themselves in the summary, clean up their temp directory and still leave the bootstrap exiting 0. It also owns the Brewfile-is-the-list behaviour: that `brew bundle cleanup` is forced, aimed at `work/Brewfile`, never passed `--zap`, and run before the install, and that a failing cleanup warns, reports itself in the summary and still lets the install run. It also owns the Node pin: every version assertion reads `./fabrica-node-version`, and it asserts that neither `work/bootstrap.sh` nor the Nix side (`modules/fabrica.nix`, `modules/fabrica-sync.sh`) carries a second copy of the number.
 - `bash work/codespace-bootstrap.test.sh` - the Codespaces work-posture install steps, against mocked `apt-get`/`dpkg`/`sudo`/`curl`/`npm`/`gh` on a hermetic `$HOME`; also asserts the functions it shares with `work/bootstrap.sh` are the exact same function objects (via `source`), not a hand-kept-in-sync copy.
 - `bash home/.local/bin/dotfiles-auto-apply.test.sh` - the self-update job: the `.dotfiles-host` split (`personal-mac` announces and never switches, `home-linux` applies, anything else refuses before it even fetches), one notification per new upstream commit and per blocked occurrence, the sudo guard (any `sudo` the switch reaches runs with `-n`, and a password prompt is called out in the log rather than left raw), plus fast-forward, dirty checkout, divergence, fetch and rebuild failures, the retry record, log trimming and notifier lookup - against a mocked `git`, a mocked `./run.sh`, a mocked `sudo` and mocked notifiers on a hermetic PATH and a scratch `$HOME`. It never reaches a real remote, a real `~/.dotfiles`, or a real switch.
 - `bash modules/inkwell-sync.test.sh` - the Inkwell backend's build and agent decisions: already-current costs no build, a stale/unstamped/dirty-tree binary is rebuilt, a rebuild restarts the agent while an unchanged one only gets started if it isn't running, an agent that isn't loaded is bootstrapped, and no network, no clone, no build or a refusing `launchctl` each warn and leave what is installed and running alone - against a mocked `git`/`go`/`launchctl` on a hermetic PATH, with `$HOME`, the Go bin directory and `$TMPDIR` all under one scratch directory. It never clones, compiles, or speaks to a real launchd.
