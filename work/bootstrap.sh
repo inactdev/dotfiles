@@ -54,6 +54,11 @@ FABRICA_HOME_PENDING=0
 CLAUDE_TOKEN_PENDING=0
 DOCKER_PENDING=0
 
+# Not a pending flag but read in the same place: the snapshot install_packages
+# saved before it removed anything, set only when something actually was
+# removed. Empty means there is nothing to offer putting back.
+BREW_SNAPSHOT=
+
 # The two repositories this host installs from, and where their binaries
 # land. $HOME/.local rather than npm's own global prefix (Homebrew's, on
 # this host) or Go's own default GOBIN (~/go/bin, which is what the Nix
@@ -66,6 +71,17 @@ FABRICA_REPO_URL=https://github.com/inactdev/fabrica.git
 FABRICA_BRANCH=master
 INSPECTOR_PKG_PATH=github.com/inactdev/inspector/cmd/inspector
 MANAGED_PREFIX="$HOME/.local"
+
+# Where install_packages saves the list of what was installed before it
+# removes anything, and the path the closing summary points at. Outside the
+# repository on purpose - it is machine state, not a tracked manifest, and
+# a Brewfile sitting in the checkout would dirty `git status` on every
+# rebuild, invite being committed (it lists everything installed on a
+# company machine), and leave a stray Brewfile around for someone to aim
+# `brew bundle` at by accident. XDG_STATE_HOME with the same fallback
+# run.sh and home/.local/bin/dotfiles-auto-apply already use, so all of
+# this repo's recoverable machine state sits under one base.
+BREW_SNAPSHOT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles"
 
 # The one Node version Fabrica is supported on, and the only one it is ever
 # run with on this host: install_node_version downloads exactly this through
@@ -149,17 +165,28 @@ install_homebrew() {
 # grew, while personal-mac has retracted its own list since it was written
 # (configuration.nix's homebrew.onActivation.cleanup).
 #
+# Nothing is removed until what is installed has been written down. `brew
+# bundle dump` is Homebrew's own documented installed-state snapshot - "all
+# installed casks/formulae/images/taps" - and those are exactly the
+# categories `cleanup` can remove from a Brewfile that declares nothing but
+# `brew` and `cask` lines, which is all work/Brewfile is, so the snapshot
+# needs no opt-in flag to be complete. `--force` on *dump* only means
+# "overwrite an existing file" (the path is this run's own dated one, so
+# there is nothing of anyone else's to overwrite); on *cleanup* it is what
+# turns a listing into an actual removal.
+#
+# A dump that fails skips the cleanup entirely rather than going ahead
+# without it: a removal nobody wrote down is the one outcome here with no
+# way back, and `brew bundle --file=<snapshot>` - the single command that
+# undoes a removal - only exists if the snapshot does. See print_summary,
+# which hands that command to the captain whenever something was removed.
+#
 # Plain `cleanup`, never `--zap`: for a cask, `--zap` also deletes that
 # app's settings and data, which is far too much to do unattended on a
 # company machine. An uninstall-only removal of something that turns out to
-# have been wanted is recoverable by reinstalling it; a zapped one is not.
-# This is a deliberate divergence from personal-mac, whose cleanup *is*
-# "zap" - see notes/20261106-work-brewfile-cleanup.md.
-#
-# --force because `cleanup` without it only lists what it would remove, and
-# a non-interactive bootstrap has nobody to confirm with. Its output is left
-# on stdout rather than captured, which is what reports each removal as it
-# happens.
+# have been wanted comes back from the snapshot; a zapped one's settings do
+# not. This is a deliberate divergence from personal-mac, whose cleanup
+# *is* "zap" - see notes/20261106-work-brewfile-cleanup.md.
 #
 # Two reasons cleanup is its own command *before* the install rather than
 # `brew bundle --cleanup --file=...`, which is documented as equivalent to
@@ -173,14 +200,47 @@ install_homebrew() {
 #     With cleanup first, the install right behind it puts anything
 #     over-removed straight back; the other order leaves it missing.
 install_packages() {
-  local repo="$1" brew brewfile
+  local repo="$1" brew brewfile snapshot removed='' cleanup_failed=''
   brew="$(brew_bin)"
   brewfile="$repo/work/Brewfile"
-  echo "==> removing packages not in work/Brewfile (brew bundle cleanup)"
-  if ! "$brew" bundle cleanup --force --file="$brewfile"; then
+  # One dated file per run, never one file overwritten: a fixed name would
+  # mean the next run destroys the record of what this one removed, which
+  # is exactly when it gets wanted - a tool nobody has reached for in a
+  # fortnight is missed a fortnight later.
+  snapshot="$BREW_SNAPSHOT_DIR/brew-before-cleanup-$(date +%Y%m%d-%H%M%S).Brewfile"
+
+  echo "==> saving what is installed now (brew bundle dump)"
+  if ! mkdir -p "$BREW_SNAPSHOT_DIR" ||
+    ! "$brew" bundle dump --force --file="$snapshot"; then
     BREW_CLEANUP_PENDING=1
-    echo "    WARN: brew bundle cleanup --force --file=$brewfile failed, so" >&2
-    echo "          packages this host no longer lists may still be installed" >&2
+    echo "    WARN: could not write $snapshot, so nothing was removed -" >&2
+    echo "          brew bundle cleanup is skipped rather than run without" >&2
+    echo "          a saved list to put things back from" >&2
+  else
+    echo "    saved $snapshot"
+    echo "==> removing packages not in work/Brewfile (brew bundle cleanup)"
+    # Captured rather than left to print itself, because whether anything
+    # was removed is what decides if the summary offers the restore
+    # command. stderr comes along so a cleanup that half-finishes still
+    # shows what it said. The cost is that this step's output arrives when
+    # it ends rather than line by line.
+    if ! removed="$("$brew" bundle cleanup --force --file="$brewfile" 2>&1)"; then
+      cleanup_failed=1
+    fi
+    # Any output at all counts as "something happened", rather than a grep
+    # for "Uninstalling": the wording differs between formulae, casks and
+    # the autoremove step and is no documented interface. Over-reporting
+    # the restore path when nothing was removed costs three lines in a
+    # summary; under-reporting costs someone their way back.
+    if [ -n "$(printf '%s' "$removed" | tr -d '[:space:]')" ]; then
+      printf '%s\n' "$removed"
+      BREW_SNAPSHOT="$snapshot"
+    fi
+    if [ -n "$cleanup_failed" ]; then
+      BREW_CLEANUP_PENDING=1
+      echo "    WARN: brew bundle cleanup --force --file=$brewfile failed, so" >&2
+      echo "          packages this host no longer lists may still be installed" >&2
+    fi
   fi
   echo "==> installing packages (brew bundle)"
   "$brew" bundle --file="$brewfile"
@@ -758,6 +818,18 @@ print_git_gh_pending() {
 print_summary() {
   echo ""
   echo "==> done"
+  # Not under "Still needs attention": a removal that worked is not a
+  # problem, it is the one thing in this whole run someone might want to
+  # undo - so the saved list and the single command that puts all of it
+  # back go at the top of the summary, where they are still on screen when
+  # a missing tool gets noticed.
+  if [ -n "$BREW_SNAPSHOT" ]; then
+    echo "Homebrew packages not listed in work/Brewfile were removed."
+    echo "  What was installed before that is saved at:"
+    echo "    $BREW_SNAPSHOT"
+    echo "  Put all of it back with:"
+    echo "    brew bundle --file=$BREW_SNAPSHOT"
+  fi
   if [ "$GIT_IDENTITY_PENDING" = 1 ] || [ "$MACOS_DEFAULTS_PENDING" = 1 ] ||
     [ "$GH_LOGIN_PENDING" = 1 ] || [ "$FABRICA_PENDING" = 1 ] ||
     [ "$INSPECTOR_PENDING" = 1 ] || [ "$DOCKER_PENDING" = 1 ] ||
@@ -790,8 +862,9 @@ print_summary() {
       echo "  - Inspector: not installed; see the warning above, then re-run this bootstrap"
     fi
     if [ "$BREW_CLEANUP_PENDING" = 1 ]; then
-      echo "  - Homebrew still has packages work/Brewfile does not list: brew bundle"
-      echo "      cleanup failed; see the warning above, then re-run this bootstrap"
+      echo "  - Homebrew may still have packages work/Brewfile does not list: the"
+      echo "      removal step did not run or did not finish; see the warning"
+      echo "      above, then re-run this bootstrap"
     fi
     if [ "$MACOS_DEFAULTS_PENDING" = 1 ]; then
       echo "  - some macOS defaults were rejected, likely by MDM policy"

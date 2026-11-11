@@ -2,9 +2,11 @@
 # Install EXACTLY this, nothing more - enforced, not just intended:
 # work/bootstrap.sh's install_packages runs `brew bundle cleanup --force`
 # against this file before installing from it, so dropping a line here
-# uninstalls that package from the work Mac on the next run. Keep in sync
-# with the "excluded by captain decision" list in README.md when either
-# changes.
+# uninstalls that package from the work Mac on the next run. That run saves
+# what was installed first and prints the one command that puts it back, so
+# a line dropped by mistake is recoverable - see README.md's "Exactly the
+# Brewfile". Keep in sync with the "excluded by captain decision" list in
+# README.md when either changes.
 #
 # Also the intent (not the manifest) for the codespace-work path: adding or
 # removing a line here means work/codespace-bootstrap.sh needs the matching
